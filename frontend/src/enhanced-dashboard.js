@@ -397,6 +397,9 @@ class EnhancedDashboard {
             });
         }
         
+        // Scanner selection information
+        this.loadScannerCapabilities();
+        
         // Real-time updates toggle
         const realtimeToggle = document.getElementById('realtime-toggle');
         if (realtimeToggle) {
@@ -431,7 +434,7 @@ class EnhancedDashboard {
     
     showEnhancedScanDialog() {
         /**
-         * Show enhanced scan configuration dialog
+         * Show enhanced scan configuration dialog with scanner selection
          */
         const dialog = document.createElement('div');
         dialog.className = 'modal enhanced-scan-modal';
@@ -453,30 +456,59 @@ class EnhancedDashboard {
                         </div>
                         
                         <div class="config-section">
-                            <h3>Discovery Methods</h3>
+                            <h3>Scanner Type</h3>
                             <div class="form-group">
-                                <label><input type="checkbox" id="enable-snmp" checked> SNMP Discovery</label>
-                                <label><input type="checkbox" id="enable-nmap" checked> Nmap Scanning</label>
-                                <label><input type="checkbox" id="enable-arp" checked> ARP Table Scan</label>
-                                <label><input type="checkbox" id="topology-discovery" checked> Topology Discovery</label>
+                                <select id="scanner-type" class="form-control">
+                                    <option value="auto">Auto-Select (Recommended)</option>
+                                    <option value="job_based">Job-Based Scanner (Netdisco-Compatible)</option>
+                                    <option value="enhanced">Enhanced Scanner</option>
+                                    <option value="simple">Simple Scanner</option>
+                                </select>
+                                <small id="scanner-description">Automatically selects the best scanner for your network size</small>
+                            </div>
+                            
+                            <div class="scanner-features" id="scanner-features">
+                                <h4>Selected Scanner Features:</h4>
+                                <ul id="feature-list">
+                                    <li>✅ Automatic network size detection</li>
+                                    <li>✅ Optimal performance for your subnet</li>
+                                </ul>
                             </div>
                         </div>
                         
                         <div class="config-section">
-                            <h3>Scan Depth</h3>
+                            <h3>Advanced Options</h3>
                             <div class="form-group">
-                                <label><input type="radio" name="scan-depth" value="quick" checked> Quick Scan</label>
-                                <label><input type="radio" name="scan-depth" value="standard"> Standard Scan</label>
-                                <label><input type="radio" name="scan-depth" value="deep"> Deep Scan (All Ports)</label>
-                                <label><input type="checkbox" id="vulnerability-scan" checked> Include Vulnerability Scan</label>
+                                <label><input type="checkbox" id="deep-scan"> Deep Scan (Comprehensive)</label>
+                                <label><input type="checkbox" id="topology-discovery" checked> Topology Discovery (CDP/LLDP)</label>
+                                <label><input type="checkbox" id="vulnerability-scan"> Include Vulnerability Scan</label>
                             </div>
                         </div>
                         
-                        <div class="config-section">
+                        <div class="config-section" id="snmp-config">
                             <h3>SNMP Configuration</h3>
                             <div class="form-group">
                                 <label for="snmp-communities">Communities (comma-separated)</label>
                                 <input type="text" id="snmp-communities" value="public,private" placeholder="public,private,community">
+                                <small>Used for SNMP-based device discovery and profiling</small>
+                            </div>
+                        </div>
+                        
+                        <div class="config-section" id="scan-preview">
+                            <h3>Scan Preview</h3>
+                            <div class="preview-info">
+                                <div class="preview-item">
+                                    <span class="preview-label">Estimated Duration:</span>
+                                    <span class="preview-value" id="estimated-duration">2-5 minutes</span>
+                                </div>
+                                <div class="preview-item">
+                                    <span class="preview-label">Discovery Methods:</span>
+                                    <span class="preview-value" id="discovery-methods">ICMP, DNS, SNMP</span>
+                                </div>
+                                <div class="preview-item">
+                                    <span class="preview-label">Expected Features:</span>
+                                    <span class="preview-value" id="expected-features">Device profiling, Classification</span>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -491,6 +523,15 @@ class EnhancedDashboard {
         `;
         
         document.body.appendChild(dialog);
+        
+        // Set up scanner type change handler
+        const scannerTypeSelect = dialog.querySelector('#scanner-type');
+        scannerTypeSelect.addEventListener('change', () => {
+            this.updateScannerPreview(dialog, scannerTypeSelect.value);
+        });
+        
+        // Initialize with default scanner preview
+        this.updateScannerPreview(dialog, 'auto');
         
         // Event listeners for modal
         dialog.querySelector('.modal-close').addEventListener('click', () => {
@@ -508,18 +549,150 @@ class EnhancedDashboard {
         dialog.style.display = 'block';
     }
     
+    async loadScannerCapabilities() {
+        /**
+         * Load available scanner capabilities from API
+         */
+        try {
+            const data = await this.apiCall('/api/scanners/available');
+            this.scannerCapabilities = data.available_scanners;
+            this.autoSelectionLogic = data.auto_selection_logic;
+        } catch (error) {
+            console.error('Failed to load scanner capabilities:', error);
+            // Set defaults if API call fails
+            this.scannerCapabilities = {
+                simple: { name: 'Simple Scanner', features: ['ping_sweep'], performance: 'Fast' },
+                enhanced: { name: 'Enhanced Scanner', features: ['multi_method_discovery'], performance: 'Medium' },
+                job_based: { name: 'Job-Based Scanner', features: ['comprehensive_discovery'], performance: 'Comprehensive' }
+            };
+        }
+    }
+    
+    updateScannerPreview(dialog, scannerType) {
+        /**
+         * Update the scanner preview information
+         */
+        const description = dialog.querySelector('#scanner-description');
+        const featureList = dialog.querySelector('#feature-list');
+        const estimatedDuration = dialog.querySelector('#estimated-duration');
+        const discoveryMethods = dialog.querySelector('#discovery-methods');
+        const expectedFeatures = dialog.querySelector('#expected-features');
+        
+        const scannerInfo = this.scannerCapabilities?.[scannerType] || {};
+        
+        // Update description
+        let descriptionText = scannerInfo.description || 'Scanner information not available';
+        if (scannerType === 'auto') {
+            descriptionText = 'Automatically selects the best scanner based on network size and requirements';
+        }
+        description.textContent = descriptionText;
+        
+        // Update features list
+        featureList.innerHTML = '';
+        const features = this.getScannerFeatures(scannerType);
+        features.forEach(feature => {
+            const li = document.createElement('li');
+            li.innerHTML = `✅ ${feature}`;
+            featureList.appendChild(li);
+        });
+        
+        // Update preview information
+        const previewData = this.getScannerPreviewData(scannerType);
+        estimatedDuration.textContent = previewData.duration;
+        discoveryMethods.textContent = previewData.methods;
+        expectedFeatures.textContent = previewData.features;
+        
+        // Show/hide SNMP configuration based on scanner type
+        const snmpConfig = dialog.querySelector('#snmp-config');
+        if (scannerType === 'job_based' || scannerType === 'auto') {
+            snmpConfig.style.display = 'block';
+        } else if (scannerType === 'simple') {
+            snmpConfig.style.display = 'none';
+        }
+    }
+    
+    getScannerFeatures(scannerType) {
+        /**
+         * Get feature list for scanner type
+         */
+        const features = {
+            auto: [
+                'Intelligent scanner selection',
+                'Network size optimization',
+                'Best performance for your network'
+            ],
+            job_based: [
+                'Event-driven job queue',
+                'Breadth-first network discovery',
+                'SNMP comprehensive profiling',
+                'CDP/LLDP topology mapping',
+                'MAC table collection',
+                'ARP table collection', 
+                'Historical data continuity',
+                'Intelligent retry logic',
+                'Netdisco-compatible algorithms'
+            ],
+            enhanced: [
+                'Multi-method host discovery',
+                'Nmap port scanning',
+                'Basic SNMP queries',
+                'Device type classification',
+                'Vulnerability detection'
+            ],
+            simple: [
+                'Fast ICMP ping sweep',
+                'Basic hostname resolution',
+                'Simple device classification'
+            ]
+        };
+        
+        return features[scannerType] || ['Basic network scanning'];
+    }
+    
+    getScannerPreviewData(scannerType) {
+        /**
+         * Get preview data for scanner type
+         */
+        const previewData = {
+            auto: {
+                duration: '2-8 minutes (varies by network)',
+                methods: 'Auto-selected protocols',
+                features: 'Optimized for your network'
+            },
+            job_based: {
+                duration: '3-10 minutes',
+                methods: 'ICMP, SNMP, CDP, LLDP, ARP, DNS',
+                features: 'Complete network profiling, Topology mapping'
+            },
+            enhanced: {
+                duration: '2-5 minutes', 
+                methods: 'ICMP, TCP, UDP, SNMP, DNS',
+                features: 'Port scanning, Vulnerability detection'
+            },
+            simple: {
+                duration: '30 seconds - 2 minutes',
+                methods: 'ICMP, DNS',
+                features: 'Basic device discovery'
+            }
+        };
+        
+        return previewData[scannerType] || {
+            duration: 'Unknown',
+            methods: 'Basic protocols',
+            features: 'Standard scanning'
+        };
+    }
+    
     startEnhancedScan(dialog) {
         /**
          * Start enhanced network scan with configuration
          */
         const config = {
             subnet: dialog.querySelector('#scan-subnet').value,
-            snmp_enabled: dialog.querySelector('#enable-snmp').checked,
-            nmap_enabled: dialog.querySelector('#enable-nmap').checked,
-            arp_enabled: dialog.querySelector('#enable-arp').checked,
+            scanner_type: dialog.querySelector('#scanner-type').value,
+            deep_scan: dialog.querySelector('#deep-scan').checked,
             topology_discovery: dialog.querySelector('#topology-discovery').checked,
             vulnerability_scan: dialog.querySelector('#vulnerability-scan').checked,
-            scan_depth: dialog.querySelector('input[name="scan-depth"]:checked').value,
             snmp_communities: dialog.querySelector('#snmp-communities').value.split(',').map(s => s.trim())
         };
         
@@ -566,10 +739,30 @@ class EnhancedDashboard {
                         <span class="progress-percentage">0%</span>
                     </div>
                     <div class="progress-stages">
-                        <div class="stage" data-stage="discovery">Discovery</div>
-                        <div class="stage" data-stage="scanning">Scanning</div>
-                        <div class="stage" data-stage="analysis">Analysis</div>
-                        <div class="stage" data-stage="inventory">Inventory</div>
+                        <div class="stage" data-stage="network_discovery">Network Discovery</div>
+                        <div class="stage" data-stage="host_discovery">Host Discovery</div>
+                        <div class="stage" data-stage="topology_mapping">Topology Mapping</div>
+                        <div class="stage" data-stage="data_processing">Data Processing</div>
+                    </div>
+                    <div class="job-based-details" id="job-details" style="display: none;">
+                        <div class="job-stats">
+                            <div class="stat-item">
+                                <span class="stat-label">Jobs Completed:</span>
+                                <span class="stat-value" id="jobs-completed">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">Active Jobs:</span>
+                                <span class="stat-value" id="active-jobs">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">Devices Found:</span>
+                                <span class="stat-value" id="devices-found">0</span>
+                            </div>
+                        </div>
+                        <div class="current-jobs" id="current-jobs">
+                            <h5>Current Activities:</h5>
+                            <div class="job-list" id="job-list"></div>
+                        </div>
                     </div>
                 </div>
             `;
@@ -578,14 +771,14 @@ class EnhancedDashboard {
     
     updateScanProgress(data) {
         /**
-         * Update scan progress display
+         * Update scan progress display with enhanced job-based information
          */
         const progressFill = document.querySelector('.progress-fill');
         const progressText = document.querySelector('.progress-text');
         const progressPercentage = document.querySelector('.progress-percentage');
         
         if (progressFill) {
-            progressFill.style.width = `${data.progress}%`;
+            progressFill.style.width = `${data.progress || 0}%`;
         }
         
         if (progressText) {
@@ -593,20 +786,107 @@ class EnhancedDashboard {
         }
         
         if (progressPercentage) {
-            progressPercentage.textContent = `${data.progress}%`;
+            progressPercentage.textContent = `${data.progress || 0}%`;
         }
         
-        // Update stage indicators
-        const stages = ['discovery', 'scanning', 'analysis', 'inventory'];
-        const currentStageIndex = Math.floor(data.progress / 25);
+        // Handle job-based scanner specific progress
+        if (data.scanner_type === 'job_based' || data.enhanced) {
+            this.updateJobBasedProgress(data);
+        } else {
+            // Update legacy stage indicators
+            const stages = ['network_discovery', 'host_discovery', 'topology_mapping', 'data_processing'];
+            const currentStageIndex = Math.floor((data.progress || 0) / 25);
+            
+            stages.forEach((stage, index) => {
+                const stageElement = document.querySelector(`[data-stage="${stage}"]`);
+                if (stageElement) {
+                    stageElement.classList.toggle('active', index === currentStageIndex);
+                    stageElement.classList.toggle('completed', index < currentStageIndex);
+                }
+            });
+        }
+    }
+    
+    updateJobBasedProgress(data) {
+        /**
+         * Update job-based scanner specific progress information
+         */
+        // Show job-based details
+        const jobDetails = document.getElementById('job-details');
+        if (jobDetails) {
+            jobDetails.style.display = 'block';
+        }
         
-        stages.forEach((stage, index) => {
+        // Update job statistics
+        const jobsCompleted = document.getElementById('jobs-completed');
+        const activeJobs = document.getElementById('active-jobs');  
+        const devicesFound = document.getElementById('devices-found');
+        
+        if (data.jobs_executed) {
+            if (jobsCompleted) jobsCompleted.textContent = data.jobs_executed.completed || 0;
+            if (activeJobs) activeJobs.textContent = data.active_jobs || 0;
+        }
+        
+        if (devicesFound) {
+            devicesFound.textContent = data.devices_found || data.devices_discovered || 0;
+        }
+        
+        // Update current activities
+        const jobList = document.getElementById('job-list');
+        if (jobList && data.current_activities) {
+            jobList.innerHTML = '';
+            data.current_activities.slice(0, 5).forEach(activity => {
+                const activityDiv = document.createElement('div');
+                activityDiv.className = 'job-activity';
+                activityDiv.innerHTML = `
+                    <span class="job-type">${activity.job_type || 'Unknown'}</span>
+                    <span class="job-target">${activity.target || ''}</span>
+                    <span class="job-status ${activity.status || 'pending'}">${activity.status || 'pending'}</span>
+                `;
+                jobList.appendChild(activityDiv);
+            });
+        }
+        
+        // Update enhanced stages
+        const stageMapping = {
+            'network_discovery': ['PINGSWEEP', 'DISCOVER'],
+            'host_discovery': ['DISCOVER', 'PORTMAP'],
+            'topology_mapping': ['TOPOLOGY', 'MACSUCK', 'ARPNIP'],
+            'data_processing': ['completed']
+        };
+        
+        const currentStage = data.current_stage || this.inferStageFromJobs(data);
+        
+        Object.keys(stageMapping).forEach(stage => {
             const stageElement = document.querySelector(`[data-stage="${stage}"]`);
             if (stageElement) {
-                stageElement.classList.toggle('active', index === currentStageIndex);
-                stageElement.classList.toggle('completed', index < currentStageIndex);
+                const isActive = stage === currentStage;
+                const isCompleted = this.isStageCompleted(stage, currentStage);
+                
+                stageElement.classList.toggle('active', isActive);
+                stageElement.classList.toggle('completed', isCompleted);
             }
         });
+    }
+    
+    inferStageFromJobs(data) {
+        /**
+         * Infer current stage from job information
+         */
+        if (data.progress >= 90) return 'data_processing';
+        if (data.progress >= 60) return 'topology_mapping';
+        if (data.progress >= 30) return 'host_discovery';
+        return 'network_discovery';
+    }
+    
+    isStageCompleted(stage, currentStage) {
+        /**
+         * Check if a stage is completed
+         */
+        const stageOrder = ['network_discovery', 'host_discovery', 'topology_mapping', 'data_processing'];
+        const stageIndex = stageOrder.indexOf(stage);
+        const currentIndex = stageOrder.indexOf(currentStage);
+        return stageIndex < currentIndex;
     }
     
     hideScanProgress() {
@@ -639,15 +919,124 @@ class EnhancedDashboard {
     
     updateStatistics(stats) {
         /**
-         * Update dashboard statistics
+         * Update dashboard statistics with enhanced job-based scanner data
          */
-        // Update stat cards using correct HTML IDs
-        this.updateStatCard('total-hosts', stats.total_devices || 0);
+        // Update basic stat cards using correct HTML IDs
+        this.updateStatCard('total-hosts', stats.total_devices || stats.total_hosts || 0);
         this.updateStatCard('critical-vulns', stats.critical_vulnerabilities || 0);
         this.updateStatCard('open-ports', stats.port_statistics?.total_open_ports || 0);
         this.updateStatCard('security-score', Math.round(stats.uptime_percentage || 0));
+        
+        // Update enhanced statistics if available
+        if (stats.enhanced || stats.job_based) {
+            this.updateEnhancedStatistics(stats);
+        }
+        
         // Update vulnerability chart
         this.updateVulnChart(stats);
+    }
+    
+    updateEnhancedStatistics(stats) {
+        /**
+         * Update enhanced statistics from job-based scanner
+         */
+        // Update topology information
+        if (stats.topology_links !== undefined) {
+            const topologyCard = document.getElementById('topology-links');
+            if (topologyCard) {
+                this.updateStatCard('topology-links', stats.topology_links);
+            } else {
+                // Create topology card if it doesn't exist
+                this.createEnhancedStatCard('topology-links', 'Topology Links', stats.topology_links, 'fas fa-project-diagram');
+            }
+        }
+        
+        // Update SNMP devices count
+        if (stats.snmp_devices !== undefined) {
+            const snmpCard = document.getElementById('snmp-devices');
+            if (snmpCard) {
+                this.updateStatCard('snmp-devices', stats.snmp_devices);
+            } else {
+                this.createEnhancedStatCard('snmp-devices', 'SNMP Devices', stats.snmp_devices, 'fas fa-network-wired');
+            }
+        }
+        
+        // Update scan metadata if available
+        if (stats.scan_metadata) {
+            this.displayScanMetadata(stats.scan_metadata);
+        }
+        
+        // Show enhanced features indicator
+        const enhancedIndicator = document.getElementById('enhanced-indicator');
+        if (enhancedIndicator) {
+            enhancedIndicator.style.display = 'block';
+            enhancedIndicator.innerHTML = `
+                <i class="fas fa-star"></i>
+                <span>Enhanced Scanner Active</span>
+                ${stats.job_based ? '<small>Job-Based • Netdisco Compatible</small>' : '<small>Enhanced Features</small>'}
+            `;
+        }
+    }
+    
+    createEnhancedStatCard(id, title, value, iconClass) {
+        /**
+         * Create enhanced stat card for new metrics
+         */
+        const statsContainer = document.querySelector('.stats-cards') || document.querySelector('.stats-grid');
+        if (!statsContainer) return;
+        
+        const card = document.createElement('div');
+        card.className = 'stat-card enhanced';
+        card.innerHTML = `
+            <div class="stat-icon">
+                <i class="${iconClass}"></i>
+            </div>
+            <div class="stat-content">
+                <div class="stat-value" id="${id}">${value}</div>
+                <div class="stat-label">${title}</div>
+                <div class="stat-change enhanced">Enhanced Feature</div>
+            </div>
+        `;
+        
+        statsContainer.appendChild(card);
+    }
+    
+    displayScanMetadata(metadata) {
+        /**
+         * Display scan metadata from job-based scanner
+         */
+        const metadataContainer = document.getElementById('scan-metadata');
+        if (!metadataContainer) return;
+        
+        metadataContainer.innerHTML = `
+            <h4>Last Scan Information</h4>
+            <div class="metadata-grid">
+                <div class="metadata-item">
+                    <span class="metadata-label">Scanner Type:</span>
+                    <span class="metadata-value">${metadata.scan_type || 'Unknown'}</span>
+                </div>
+                <div class="metadata-item">
+                    <span class="metadata-label">Devices Discovered:</span>
+                    <span class="metadata-value">${metadata.devices_discovered || 0}</span>
+                </div>
+                <div class="metadata-item">
+                    <span class="metadata-label">Topology Links:</span>
+                    <span class="metadata-value">${metadata.topology_links || 0}</span>
+                </div>
+                <div class="metadata-item">
+                    <span class="metadata-label">MAC Entries:</span>
+                    <span class="metadata-value">${metadata.mac_entries || 0}</span>
+                </div>
+                <div class="metadata-item">
+                    <span class="metadata-label">ARP Entries:</span>
+                    <span class="metadata-value">${metadata.arp_entries || 0}</span>
+                </div>
+                <div class="metadata-item">
+                    <span class="metadata-label">SNMP Devices:</span>
+                    <span class="metadata-value">${metadata.snmp_devices || 0}</span>
+                </div>
+            </div>
+        `;
     }
 
     updateVulnChart(stats) {
@@ -714,23 +1103,57 @@ class EnhancedDashboard {
          * Populate inventory table and update charts from /api/devices
          */
         const devices = devicesPayload?.devices || [];
-        // Inventory table
+        // Inventory table with enhanced job-based scanner data
         const tbody = document.getElementById('inventory-tbody');
         if (tbody) {
             tbody.innerHTML = '';
             devices.forEach(d => {
                 const tr = document.createElement('tr');
+                
+                // Enhanced device row with additional information
+                const deviceTypeIcon = this.getDeviceTypeIcon(d.device_type);
+                const snmpIndicator = d.snmp_capable ? '<i class="fas fa-network-wired text-success" title="SNMP Capable"></i>' : '';
+                const topologyIndicator = (d.has_cdp || d.has_lldp) ? '<i class="fas fa-project-diagram text-info" title="Topology Discovery"></i>' : '';
+                
                 tr.innerHTML = `
-                    <td>${d.ip || ''}</td>
-                    <td>${d.hostname || ''}</td>
-                    <td>${d.mac_address || ''}</td>
-                    <td>${d.os || ''}</td>
-                    <td>${d.open_ports || 0}</td>
-                    <td>${d.vulnerabilities || 0}</td>
-                    <td>${d.risk_level || 'normal'}</td>
-                    <td>${d.last_seen || ''}</td>
-                    <td><button class="btn btn-xs" data-ip="${d.ip}">Details</button></td>
+                    <td>
+                        ${deviceTypeIcon}
+                        <span>${d.ip || ''}</span>
+                    </td>
+                    <td>${d.hostname || '<em>Unknown</em>'}</td>
+                    <td>${d.mac_address || '<em>Unknown</em>'}</td>
+                    <td>
+                        <span class="device-type">${d.device_type || 'unknown'}</span>
+                        ${d.vendor ? `<small class="text-muted"><br/>${d.vendor}</small>` : ''}
+                    </td>
+                    <td>${d.os || d.os_name || '<em>Unknown</em>'}</td>
+                    <td>
+                        <span class="port-count">${d.open_ports || 0}</span>
+                        ${d.scanner_type === 'job_based' ? '<small class="text-success">Enhanced</small>' : ''}
+                    </td>
+                    <td>
+                        <div class="device-capabilities">
+                            ${snmpIndicator}
+                            ${topologyIndicator}
+                            ${d.has_bridge_mib ? '<i class="fas fa-table text-warning" title="Bridge MIB"></i>' : ''}
+                        </div>
+                    </td>
+                    <td>
+                        <span class="timestamp">${this.formatTimestamp(d.last_seen) || ''}</span>
+                        ${d.last_discover ? `<small class="text-muted"><br/>Discovered: ${this.formatTimestamp(d.last_discover)}</small>` : ''}
+                    </td>
+                    <td>
+                        <button class="btn btn-xs btn-primary" data-ip="${d.ip}" onclick="showDeviceDetails('${d.ip}')">
+                            Details
+                        </button>
+                    </td>
                 `;
+                
+                // Add enhanced row styling
+                if (d.scanner_type === 'job_based') {
+                    tr.classList.add('enhanced-device');
+                }
+                
                 tbody.appendChild(tr);
             });
         }
@@ -839,10 +1262,50 @@ class EnhancedDashboard {
         requestAnimationFrame(animate);
     }
     
+    getDeviceTypeIcon(deviceType) {
+        /**
+         * Get icon for device type
+         */
+        const icons = {
+            'router': '<i class="fas fa-route text-primary" title="Router"></i>',
+            'switch': '<i class="fas fa-network-wired text-info" title="Switch"></i>',
+            'firewall': '<i class="fas fa-shield-alt text-danger" title="Firewall"></i>',
+            'server': '<i class="fas fa-server text-success" title="Server"></i>',
+            'workstation': '<i class="fas fa-desktop text-secondary" title="Workstation"></i>',
+            'printer': '<i class="fas fa-print text-warning" title="Printer"></i>',
+            'phone': '<i class="fas fa-phone text-info" title="IP Phone"></i>',
+            'camera': '<i class="fas fa-video text-danger" title="Camera"></i>',
+            'wireless_controller': '<i class="fas fa-wifi text-primary" title="Wireless Controller"></i>',
+            'access_point': '<i class="fas fa-broadcast-tower text-info" title="Access Point"></i>',
+            'storage': '<i class="fas fa-hdd text-warning" title="Storage"></i>',
+            'ups': '<i class="fas fa-battery-full text-success" title="UPS"></i>',
+            'iot': '<i class="fas fa-microchip text-purple" title="IoT Device"></i>',
+            'unknown': '<i class="fas fa-question-circle text-muted" title="Unknown Device"></i>'
+        };
+        
+        return icons[deviceType] || icons['unknown'];
+    }
+    
+    formatTimestamp(timestamp) {
+        /**
+         * Format timestamp for display
+         */
+        if (!timestamp) return '';
+        
+        try {
+            const date = new Date(timestamp);
+            return date.toLocaleString();
+        } catch (e) {
+            return timestamp;
+        }
+    }
+
     // WebSocket event handlers
     handleScanStarted(data) {
         console.log('Scan started:', data.scan_id);
-        this.showNotification('Scan started', 'Enhanced network scan in progress', 'info');
+        const scannerType = data.config?.scanner_type || 'enhanced';
+        const scannerName = this.getScannerDisplayName(scannerType);
+        this.showNotification('Scan Started', `${scannerName} scan in progress`, 'info');
     }
     
     handleScanProgress(data) {
@@ -852,10 +1315,50 @@ class EnhancedDashboard {
     handleScanCompleted(data) {
         console.log('Scan completed:', data);
         this.hideScanProgress();
-        this.showNotification('Scan completed', `Discovered ${data.results.devices_discovered} devices`, 'success');
+        
+        const deviceCount = data.devices_found || data.results?.devices_discovered || 0;
+        const scanType = data.summary?.scan_type || 'enhanced';
+        const isJobBased = data.summary?.job_based || data.summary?.netdisco_compatible;
+        
+        let message = `Discovered ${deviceCount} devices`;
+        
+        if (isJobBased && data.summary?.jobs_executed) {
+            const jobs = data.summary.jobs_executed;
+            message += ` using ${jobs.completed || 0} jobs`;
+            
+            // Add enhanced features information
+            if (data.summary.enhanced_features) {
+                const features = data.summary.enhanced_features;
+                const enhancedInfo = [];
+                if (features.snmp_devices > 0) enhancedInfo.push(`${features.snmp_devices} SNMP`);
+                if (features.topology_links > 0) enhancedInfo.push(`${features.topology_links} topology links`);
+                if (features.mac_entries > 0) enhancedInfo.push(`${features.mac_entries} MAC entries`);
+                
+                if (enhancedInfo.length > 0) {
+                    message += ` (${enhancedInfo.join(', ')})`;
+                }
+            }
+        }
+        
+        this.showNotification('Scan Completed', message, 'success');
         
         // Refresh dashboard data
         this.loadInitialData();
+    }
+    
+    getScannerDisplayName(scannerType) {
+        /**
+         * Get display name for scanner type
+         */
+        const names = {
+            'auto': 'Auto-Selected',
+            'job_based': 'Job-Based',
+            'netdisco': 'Netdisco-Compatible', 
+            'enhanced': 'Enhanced',
+            'simple': 'Simple'
+        };
+        
+        return names[scannerType] || 'Enhanced';
     }
     
     handleScanFailed(data) {

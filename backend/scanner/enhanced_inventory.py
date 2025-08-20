@@ -457,6 +457,360 @@ class EnhancedInventoryManager:
 
         return changes
     
+    async def process_job_based_scan(self, devices_dict: Dict, scan_id: str, metadata: Dict = None) -> Dict:
+        """
+        Process results from the job-based scanner
+        Handles the enhanced data structure including SNMP, topology, MAC tables, etc.
+        """
+        logger.info(f"Processing job-based scan results: {len(devices_dict)} devices")
+        
+        devices_processed = 0
+        changes_detected = []
+        new_devices = 0
+        enhanced_features_processed = {
+            'snmp_devices': 0,
+            'topology_links': 0,
+            'mac_entries': 0,
+            'arp_entries': 0,
+            'interfaces': 0
+        }
+        
+        try:
+            for ip, device_data in devices_dict.items():
+                # Convert job-based scanner format to inventory format
+                processed_device = self._convert_job_based_device_format(device_data)
+                
+                # Process the device
+                device_changes = await self._process_device(processed_device, scan_id)
+                changes_detected.extend(device_changes)
+                
+                # Check if it's a new device
+                if any(change.change_type == ChangeType.NEW_DEVICE for change in device_changes):
+                    new_devices += 1
+                
+                devices_processed += 1
+                
+                # Process enhanced job-based features
+                device_id = self._get_device_id_by_ip(ip)
+                if device_id:
+                    # Process SNMP interfaces
+                    if processed_device.get('interfaces'):
+                        await self._update_device_interfaces(device_id, processed_device['interfaces'])
+                        enhanced_features_processed['interfaces'] += len(processed_device['interfaces'])
+                    
+                    # Process topology data
+                    if processed_device.get('topology_links'):
+                        await self._update_topology_links(device_id, processed_device['topology_links'])
+                        enhanced_features_processed['topology_links'] += len(processed_device['topology_links'])
+                    
+                    # Process MAC table data
+                    if processed_device.get('mac_entries'):
+                        await self._update_mac_entries(device_id, processed_device['mac_entries'])
+                        enhanced_features_processed['mac_entries'] += len(processed_device['mac_entries'])
+                    
+                    # Process ARP entries
+                    if processed_device.get('arp_entries'):
+                        await self._update_arp_entries(device_id, processed_device['arp_entries'])
+                        enhanced_features_processed['arp_entries'] += len(processed_device['arp_entries'])
+                    
+                    # Count SNMP-capable devices
+                    if processed_device.get('snmp_capable'):
+                        enhanced_features_processed['snmp_devices'] += 1
+                
+                # Update progress periodically
+                if devices_processed % 10 == 0:
+                    logger.info(f"Processed {devices_processed}/{len(devices_dict)} devices")
+            
+            # Store scan metadata
+            await self._store_scan_metadata(scan_id, metadata, enhanced_features_processed)
+            
+            logger.info(f"Job-based scan processing completed: {devices_processed} devices, {len(changes_detected)} changes")
+            
+            return {
+                'devices_processed': devices_processed,
+                'changes_detected': len(changes_detected),
+                'new_devices': new_devices,
+                'enhanced_features': enhanced_features_processed,
+                'changes': [self._serialize_change(change) for change in changes_detected],
+                'scan_type': 'job_based',
+                'netdisco_compatible': True
+            }
+            
+        except Exception as e:
+            logger.error(f"Error processing job-based scan: {e}")
+            raise
+    
+    def _convert_job_based_device_format(self, device_data: Dict) -> Dict:
+        """
+        Convert job-based scanner device format to inventory format
+        """
+        if isinstance(device_data, dict) and 'ip' in device_data:
+            # Already in dict format
+            converted = device_data.copy()
+        else:
+            # Convert from DeviceRecord or similar object
+            if hasattr(device_data, '__dict__'):
+                converted = device_data.__dict__.copy()
+            else:
+                converted = dict(device_data) if device_data else {}
+        
+        # Ensure required fields are present
+        converted.setdefault('ip', '')
+        converted.setdefault('hostname', None)
+        converted.setdefault('mac_address', None)
+        converted.setdefault('vendor', None)
+        converted.setdefault('model', None)
+        converted.setdefault('os', converted.get('os_name'))  # Map os_name to os
+        converted.setdefault('os_version', None)
+        converted.setdefault('device_type', None)
+        converted.setdefault('location', None)
+        converted.setdefault('contact', None)
+        converted.setdefault('description', converted.get('system_description'))
+        converted.setdefault('uptime', None)
+        converted.setdefault('ports', [])
+        converted.setdefault('cves', [])
+        converted.setdefault('discovered_by', ['job_based_scanner'])
+        
+        # Add job-based specific fields
+        converted['scanner_type'] = 'job_based'
+        converted['snmp_capable'] = converted.get('snmp_capable', False)
+        converted['has_bridge_mib'] = converted.get('has_bridge_mib', False)
+        converted['has_cdp'] = converted.get('has_cdp', False)
+        converted['has_lldp'] = converted.get('has_lldp', False)
+        
+        # Process timestamps
+        for timestamp_field in ['first_seen', 'last_seen', 'last_discover', 'last_macsuck', 'last_arpnip']:
+            if timestamp_field in converted and converted[timestamp_field]:
+                if hasattr(converted[timestamp_field], 'isoformat'):
+                    converted[timestamp_field] = converted[timestamp_field].isoformat()
+        
+        # Extract topology data if present
+        if hasattr(device_data, 'topology_links'):
+            converted['topology_links'] = device_data.topology_links
+        
+        return converted
+    
+    def _get_device_id_by_ip(self, ip: str) -> Optional[int]:
+        """Get device ID by IP address"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT id FROM devices WHERE ip = ?', (ip,))
+                result = cursor.fetchone()
+                return result[0] if result else None
+        except Exception as e:
+            logger.error(f"Error getting device ID for {ip}: {e}")
+            return None
+    
+    async def _update_topology_links(self, device_id: int, links: List[Dict]):
+        """Update topology links for a device"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Mark existing links as inactive
+                cursor.execute(
+                    'UPDATE topology SET status = "inactive" WHERE device_id = ?',
+                    (device_id,)
+                )
+                
+                # Insert/update new links
+                for link in links:
+                    neighbor_ip = link.get('remote_ip')
+                    if neighbor_ip:
+                        neighbor_device_id = self._get_device_id_by_ip(neighbor_ip)
+                        if neighbor_device_id:
+                            cursor.execute('''
+                                INSERT OR REPLACE INTO topology (
+                                    device_id, neighbor_device_id, local_interface,
+                                    remote_interface, connection_type, discovered_via,
+                                    last_seen, status
+                                ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, "active")
+                            ''', (
+                                device_id, neighbor_device_id,
+                                link.get('local_port', ''),
+                                link.get('remote_port', ''),
+                                link.get('protocol', 'unknown'),
+                                'job_based_scanner'
+                            ))
+                
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Error updating topology links: {e}")
+    
+    async def _update_mac_entries(self, device_id: int, mac_entries: List[Dict]):
+        """Update MAC address entries (from bridge table data)"""
+        # This would update a MAC address table if we had one
+        # For now, we'll store it as device metadata
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Store MAC entries as JSON in a metadata table or device notes
+                mac_data = json.dumps({
+                    'mac_entries': mac_entries,
+                    'updated_at': datetime.now().isoformat(),
+                    'entry_count': len(mac_entries)
+                })
+                
+                cursor.execute('''
+                    UPDATE devices SET 
+                        notes = CASE 
+                            WHEN notes IS NULL THEN ?
+                            ELSE notes || '\n' || ?
+                        END
+                    WHERE id = ?
+                ''', (f"MAC Table: {len(mac_entries)} entries", f"MAC Table: {len(mac_entries)} entries", device_id))
+                
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Error updating MAC entries: {e}")
+    
+    async def _update_arp_entries(self, device_id: int, arp_entries: List[Dict]):
+        """Update ARP table entries"""
+        # Similar to MAC entries, store as metadata
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                arp_data = json.dumps({
+                    'arp_entries': arp_entries,
+                    'updated_at': datetime.now().isoformat(),
+                    'entry_count': len(arp_entries)
+                })
+                
+                cursor.execute('''
+                    UPDATE devices SET 
+                        notes = CASE 
+                            WHEN notes IS NULL THEN ?
+                            ELSE notes || '\n' || ?
+                        END
+                    WHERE id = ?
+                ''', (f"ARP Table: {len(arp_entries)} entries", f"ARP Table: {len(arp_entries)} entries", device_id))
+                
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Error updating ARP entries: {e}")
+    
+    async def _store_scan_metadata(self, scan_id: str, metadata: Dict, enhanced_features: Dict):
+        """Store metadata about the job-based scan"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Create scan_metadata table if it doesn't exist
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS scan_metadata (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        scan_id TEXT UNIQUE,
+                        scan_type TEXT,
+                        start_time TIMESTAMP,
+                        end_time TIMESTAMP,
+                        parameters TEXT,
+                        enhanced_features TEXT,
+                        devices_discovered INTEGER,
+                        topology_links INTEGER,
+                        mac_entries INTEGER,
+                        arp_entries INTEGER,
+                        snmp_devices INTEGER
+                    )
+                ''')
+                
+                cursor.execute('''
+                    INSERT OR REPLACE INTO scan_metadata (
+                        scan_id, scan_type, start_time, end_time, parameters,
+                        enhanced_features, devices_discovered, topology_links,
+                        mac_entries, arp_entries, snmp_devices
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    scan_id,
+                    'job_based',
+                    metadata.get('start_time', datetime.now().isoformat()),
+                    datetime.now().isoformat(),
+                    json.dumps(metadata or {}),
+                    json.dumps(enhanced_features),
+                    enhanced_features.get('devices_processed', 0),
+                    enhanced_features.get('topology_links', 0),
+                    enhanced_features.get('mac_entries', 0),
+                    enhanced_features.get('arp_entries', 0),
+                    enhanced_features.get('snmp_devices', 0)
+                ))
+                
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Error storing scan metadata: {e}")
+    
+    def _serialize_change(self, change: DeviceChange) -> Dict:
+        """Serialize a DeviceChange object for JSON output"""
+        return {
+            'change_id': change.change_id,
+            'device_ip': change.device_ip,
+            'change_type': change.change_type.value if hasattr(change.change_type, 'value') else str(change.change_type),
+            'old_value': change.old_value,
+            'new_value': change.new_value,
+            'timestamp': change.timestamp.isoformat() if hasattr(change.timestamp, 'isoformat') else str(change.timestamp),
+            'scan_id': change.scan_id,
+            'details': change.details
+        }
+    
+    def get_enhanced_scan_summary(self, scan_id: str = None) -> Dict:
+        """Get enhanced summary including job-based scan statistics"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Get basic device statistics
+                cursor.execute('SELECT COUNT(*) FROM devices WHERE status = "active"')
+                total_devices = cursor.fetchone()[0]
+                
+                # Get device type breakdown
+                cursor.execute('''
+                    SELECT device_type, COUNT(*) 
+                    FROM devices 
+                    WHERE status = "active" 
+                    GROUP BY device_type
+                ''')
+                device_breakdown = {row[0] or 'unknown': row[1] for row in cursor.fetchall()}
+                
+                # Get vendor breakdown
+                cursor.execute('''
+                    SELECT vendor, COUNT(*) 
+                    FROM devices 
+                    WHERE status = "active" AND vendor IS NOT NULL
+                    GROUP BY vendor
+                ''')
+                vendor_breakdown = {row[0]: row[1] for row in cursor.fetchall()}
+                
+                # Get scan metadata if scan_id provided
+                scan_metadata = {}
+                if scan_id:
+                    cursor.execute(
+                        'SELECT * FROM scan_metadata WHERE scan_id = ?',
+                        (scan_id,)
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        columns = [description[0] for description in cursor.description]
+                        scan_metadata = dict(zip(columns, row))
+                
+                # Get topology statistics
+                cursor.execute('SELECT COUNT(*) FROM topology WHERE status = "active"')
+                topology_links = cursor.fetchone()[0]
+                
+                return {
+                    'total_devices': total_devices,
+                    'device_breakdown': device_breakdown,
+                    'vendor_breakdown': vendor_breakdown,
+                    'topology_links': topology_links,
+                    'scan_metadata': scan_metadata,
+                    'enhanced': True,
+                    'job_based': True
+                }
+                
+        except Exception as e:
+            logger.error(f"Error getting enhanced scan summary: {e}")
+            return {'error': str(e), 'enhanced': False}
+    
     def _get_or_create_device(self, device_data: Dict, scan_id: str) -> int:
         """
         Get existing device or create new one
@@ -1334,9 +1688,36 @@ class EnhancedInventoryManager:
             logger.error(f"Failed to record scan metadata: {e}")
 
 # Helper function for easy integration
-async def process_enhanced_scan(devices: Dict, scan_id: str, db_path: str = None) -> Dict:
+async def process_enhanced_scan(devices: Dict, scan_id: str, metadata: Dict = None) -> Dict:
     """
     Process scan results with enhanced inventory management
+    Handles both legacy and job-based scanner results
     """
-    manager = EnhancedInventoryManager(db_path) if db_path else EnhancedInventoryManager()
-    return await manager.process_scan_results(devices, scan_id)
+    manager = EnhancedInventoryManager()
+    
+    # Determine if this is job-based scanner output
+    is_job_based = False
+    
+    if metadata:
+        is_job_based = (
+            metadata.get('scan_type') == 'job_based' or
+            metadata.get('netdisco_compatible') or
+            metadata.get('enhanced') == True
+        )
+    
+    # Check device structure for job-based indicators
+    if not is_job_based and devices:
+        sample_device = next(iter(devices.values()))
+        if isinstance(sample_device, dict):
+            job_based_indicators = [
+                'snmp_capable', 'has_bridge_mib', 'has_cdp', 'has_lldp',
+                'last_discover', 'last_macsuck', 'last_arpnip', 'scanner_type'
+            ]
+            is_job_based = any(indicator in sample_device for indicator in job_based_indicators)
+    
+    if is_job_based:
+        logger.info(f"Processing job-based scanner results: {len(devices)} devices")
+        return await manager.process_job_based_scan(devices, scan_id, metadata)
+    else:
+        logger.info(f"Processing legacy scanner results: {len(devices)} devices")
+        return await manager.process_scan_results(devices, scan_id)

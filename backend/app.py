@@ -217,20 +217,126 @@ def health_check():
             'error': str(e)
         }), 500
 
+@app.route('/api/scanners/available')
+def get_available_scanners():
+    """Get list of available scanners with their capabilities"""
+    try:
+        # Import scanner capabilities
+        from scanner.netdisco_integration import get_scan_capabilities, get_supported_protocols
+        
+        scanners = {
+            'simple': {
+                'name': 'Simple Scanner',
+                'description': 'Basic ping sweep and hostname resolution',
+                'features': ['ping_sweep', 'hostname_resolution', 'basic_classification'],
+                'recommended_for': 'Small networks (<64 hosts)',
+                'performance': 'Fast',
+                'capabilities': ['icmp', 'dns']
+            },
+            'enhanced': {
+                'name': 'Enhanced Scanner',
+                'description': 'Multi-method discovery with port scanning',
+                'features': ['multi_method_discovery', 'nmap_scanning', 'basic_snmp', 'cve_detection'],
+                'recommended_for': 'Medium networks (64-256 hosts)',
+                'performance': 'Medium',
+                'capabilities': ['icmp', 'dns', 'tcp', 'udp', 'snmp_basic', 'nmap']
+            },
+            'job_based': {
+                'name': 'Job-Based Netdisco Scanner',
+                'description': 'Advanced job-based scanner with Netdisco-inspired algorithms',
+                'features': [
+                    'event_driven_jobs', 'breadth_first_discovery', 'comprehensive_snmp',
+                    'mac_table_collection', 'arp_table_collection', 'topology_discovery',
+                    'historical_continuity', 'intelligent_deferral', 'device_profiling'
+                ],
+                'recommended_for': 'All networks, especially large (>256 hosts)',
+                'performance': 'Comprehensive',
+                'capabilities': get_supported_protocols(),
+                'advanced_features': get_scan_capabilities()
+            },
+            'netdisco': {
+                'name': 'Netdisco Compatible',
+                'description': 'Alias for job-based scanner with Netdisco compatibility',
+                'features': ['same_as_job_based'],
+                'recommended_for': 'Networks requiring Netdisco-style discovery',
+                'performance': 'Comprehensive',
+                'capabilities': get_supported_protocols()
+            }
+        }
+        
+        return jsonify({
+            'available_scanners': scanners,
+            'default_scanner': 'auto',
+            'auto_selection_logic': {
+                'small_networks': 'simple (< 64 hosts)',
+                'medium_networks': 'enhanced (64-256 hosts)',
+                'large_networks': 'job_based (> 256 hosts)',
+                'topology_required': 'job_based (any size)',
+                'deep_scan_required': 'job_based (any size)'
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting scanner info: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/scanners/capabilities')
+def get_scanner_capabilities():
+    """Get detailed capabilities of the enhanced scanner system"""
+    try:
+        from scanner.netdisco_integration import (
+            get_scan_capabilities, get_supported_protocols, 
+            get_device_classification_types, get_vendor_database_info
+        )
+        
+        return jsonify({
+            'system_capabilities': get_scan_capabilities(),
+            'supported_protocols': get_supported_protocols(),
+            'device_types': get_device_classification_types(),
+            'vendor_database': get_vendor_database_info(),
+            'job_types': [
+                'discover', 'macsuck', 'arpnip', 'pingsweep', 
+                'topology', 'nbtstat', 'portmap', 'vulnscan'
+            ],
+            'data_continuity': {
+                'historical_tracking': True,
+                'change_detection': True,
+                'active_inactive_flagging': True,
+                'audit_trail': True
+            },
+            'intelligent_features': {
+                'exponential_backoff': True,
+                'device_deferral': True,
+                'breadth_first_discovery': True,
+                'neighbor_spawning': True,
+                'priority_scheduling': True
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting capabilities: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/status')
 def get_status():
     """Get enhanced scanner status"""
     return jsonify({
         'status': 'active',
-        'version': '3.0.0-enhanced',
+        'version': '4.0.0-netdisco-enhanced',
         'active_scans': len([s for s in active_scans.values() if s.get('status') == 'running']),
+        'available_scanners': ['simple', 'enhanced', 'job_based', 'netdisco'],
+        'default_scanner': 'auto',
         'features': {
             'snmp_discovery': True,
             'topology_mapping': True,
             'change_detection': True,
             'device_classification': True,
             'vulnerability_scanning': True,
-            'real_time_updates': True
+            'real_time_updates': True,
+            'job_based_architecture': True,
+            'netdisco_compatibility': True,
+            'historical_continuity': True,
+            'intelligent_deferral': True
         }
     })
 
@@ -250,7 +356,8 @@ def start_scan():
             'deep_scan': data.get('deep_scan', False),
             'vulnerability_scan': data.get('vulnerability_scan', True),
             'snmp_communities': data.get('snmp_communities', ['public']),
-            'topology_discovery': data.get('topology_discovery', True)
+            'topology_discovery': data.get('topology_discovery', True),
+            'scanner_type': data.get('scanner_type', 'auto')  # auto, job_based, netdisco, enhanced, simple
         }
         
         logger.info(f"Starting enhanced scan {scan_id} with config: {scan_config}")
@@ -271,22 +378,89 @@ def start_scan():
                 network = ipaddress.ip_network(scan_config['subnet'], strict=False)
                 total_hosts = len(list(network.hosts()))
                 
-                if scan_config.get('deep_scan', False) or total_hosts >= 256:
-                    # Use enhanced scanner for deep scans or large networks
+                # Get scanner preference from config
+                scanner_type = scan_config.get('scanner_type', 'auto')
+                
+                if scanner_type == 'job_based' or scanner_type == 'netdisco':
+                    # Use new job-based Netdisco-inspired scanner
+                    logger.info(f"Using job-based Netdisco scanner for {scan_config['subnet']}")
+                    from scanner.netdisco_integration import scan_with_netdisco_enhanced
+                    
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        devices, summary = loop.run_until_complete(
+                            scan_with_netdisco_enhanced(scan_config['subnet'], scan_id, scan_tracker)
+                        )
+                    finally:
+                        loop.close()
+                        
+                elif scanner_type == 'auto':
+                    # Auto-select scanner based on requirements
+                    if scan_config.get('topology_discovery', False) or scan_config.get('deep_scan', False) or total_hosts >= 256:
+                        # Use job-based scanner for advanced features or large networks
+                        logger.info(f"Auto-selecting job-based scanner for {scan_config['subnet']} ({total_hosts} hosts)")
+                        from scanner.netdisco_integration import scan_with_netdisco_enhanced
+                        
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            devices, summary = loop.run_until_complete(
+                                scan_with_netdisco_enhanced(scan_config['subnet'], scan_id, scan_tracker)
+                            )
+                        finally:
+                            loop.close()
+                    elif total_hosts >= 128:
+                        # Use old enhanced scanner for medium networks
+                        logger.info(f"Auto-selecting enhanced scanner for {scan_config['subnet']} ({total_hosts} hosts)")
+                        from scanner.netdisco_enhanced_scan import scan_with_enhanced_progress
+                        devices, summary = scan_with_enhanced_progress(
+                            scan_config['subnet'], 
+                            scan_id,
+                            scan_tracker
+                        )
+                    else:
+                        # Use simple scanner for small networks
+                        logger.info(f"Auto-selecting simple scanner for {scan_config['subnet']} ({total_hosts} hosts)")
+                        from scanner.simple_scan import scan_with_progress
+                        devices, summary = scan_with_progress(
+                            scan_config['subnet'], 
+                            scan_id,
+                            scan_tracker
+                        )
+                        
+                elif scanner_type == 'enhanced':
+                    # Use old enhanced scanner
+                    logger.info(f"Using enhanced scanner for {scan_config['subnet']}")
                     from scanner.netdisco_enhanced_scan import scan_with_enhanced_progress
                     devices, summary = scan_with_enhanced_progress(
                         scan_config['subnet'], 
                         scan_id,
                         scan_tracker
                     )
-                else:
-                    # Use simple scanner for quick scans
+                    
+                elif scanner_type == 'simple':
+                    # Use simple scanner
+                    logger.info(f"Using simple scanner for {scan_config['subnet']}")
                     from scanner.simple_scan import scan_with_progress
                     devices, summary = scan_with_progress(
                         scan_config['subnet'], 
                         scan_id,
                         scan_tracker
                     )
+                else:
+                    # Fallback to job-based scanner for unknown types
+                    logger.warning(f"Unknown scanner type '{scanner_type}', falling back to job-based scanner")
+                    from scanner.netdisco_integration import scan_with_netdisco_enhanced
+                    
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        devices, summary = loop.run_until_complete(
+                            scan_with_netdisco_enhanced(scan_config['subnet'], scan_id, scan_tracker)
+                        )
+                    finally:
+                        loop.close()
                 
                 # Process results through inventory manager if devices found
                 if devices:
