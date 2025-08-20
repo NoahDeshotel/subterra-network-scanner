@@ -415,20 +415,39 @@ def start_scan():
                 except Exception as e:
                     logger.warning(f"Could not detect from interfaces: {e}")
             
-            # Method 3: Use environment variable if set (for Docker)
+            # Method 3: Use environment variable if set (for Docker - highest priority)
             if not detected_subnet and os.getenv('HOST_SUBNET'):
                 detected_subnet = os.getenv('HOST_SUBNET')
                 logger.info(f"Using HOST_SUBNET environment variable: {detected_subnet}")
             
-            # Method 4: Final fallback
+            # Method 4: Try external connection method
+            if not detected_subnet:
+                try:
+                    # Connect to external host to determine local IP
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.connect(("8.8.8.8", 80))
+                    local_ip = s.getsockname()[0]
+                    s.close()
+                    
+                    # Convert to /24 subnet
+                    subnet_parts = local_ip.split('.')
+                    detected_subnet = f"{'.'.join(subnet_parts[:3])}.0/24"
+                    logger.info(f"Detected subnet via external connection: {detected_subnet}")
+                except Exception as e:
+                    logger.warning(f"Could not detect via external connection: {e}")
+            
+            # Method 5: Final fallback
             if not detected_subnet:
                 hostname = socket.gethostname()
                 local_ip = socket.gethostbyname(hostname)
-                # Skip if it's a Docker IP
-                if local_ip.startswith(('172.17.', '172.18.', '172.19.')):
-                    # Try to use a common home network subnet
-                    detected_subnet = '192.168.1.0/24'
-                    logger.warning(f"Detected Docker IP {local_ip}, using default home subnet: {detected_subnet}")
+                
+                # Check if it's a Docker IP and use a sensible default
+                if local_ip.startswith(('172.17.', '172.18.', '172.19.', '172.20.', '172.21.', '172.22.', '172.23.')):
+                    # Common home network subnets to try
+                    default_subnets = ['192.168.1.0/24', '192.168.0.0/24', '10.0.0.0/24', '10.1.0.0/24']
+                    detected_subnet = default_subnets[0]  # Default to most common home subnet
+                    logger.warning(f"Detected Docker IP {local_ip}, using common home subnet: {detected_subnet}")
+                    logger.warning("⚠️  Consider setting HOST_SUBNET environment variable for accurate scanning")
                 else:
                     # Convert to /24 subnet
                     subnet_parts = local_ip.split('.')

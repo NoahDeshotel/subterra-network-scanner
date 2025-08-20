@@ -16,7 +16,6 @@ services:
       - SECRET_KEY=${SECRET_KEY}
       - SCAN_INTERVAL=${SCAN_INTERVAL:-3600}
       - HOST_SUBNET=${HOST_SUBNET:-192.168.1.0/24}
-    network_mode: "host"
     privileged: true
     restart: unless-stopped
     healthcheck:
