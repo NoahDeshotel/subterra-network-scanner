@@ -65,13 +65,12 @@ def websocket_progress_callback(event_type: str, data: dict):
     except Exception as e:
         logger.error(f"Failed to send WebSocket event: {e}")
 
-set_websocket_callback(websocket_progress_callback)
-
 # Global instances
 inventory_manager = EnhancedInventoryManager()
 discovery_engine = None
 active_scans = {}
 scan_tracker = get_scan_tracker()
+set_websocket_callback(websocket_progress_callback)
 
 class ScanManager:
     """Manages scanning operations and WebSocket communication"""
@@ -495,6 +494,16 @@ def start_scan():
                     'success': False,
                     'error': str(e)
                 })
+        
+        # Initialize scan tracking before starting thread
+        scan_tracker.start_scan(scan_id, 0, scan_config)
+        
+        # Emit scan started event
+        socketio.emit('scan_started', {
+            'scan_id': scan_id,
+            'config': scan_config,
+            'subnet': scan_config['subnet']
+        })
         
         scan_thread = threading.Thread(target=run_scan)
         scan_thread.daemon = True

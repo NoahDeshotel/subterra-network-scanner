@@ -777,33 +777,62 @@ class EnhancedDashboard {
         const progressText = document.querySelector('.progress-text');
         const progressPercentage = document.querySelector('.progress-percentage');
         
+        // Handle new progress structure from scan_progress_tracker
+        let progressValue = 0;
+        let progressMessage = 'Scanning...';
+        let scannerType = 'enhanced';
+        
+        if (data.progress && typeof data.progress === 'object') {
+            // New structure from scan_progress_tracker
+            progressValue = data.progress.percentage || 0;
+            progressMessage = data.progress.current_step || 'Scanning...';
+            scannerType = data.progress.details?.scanner_type || 'enhanced';
+            
+            // Update stage indicators based on actual stage
+            const currentStage = data.progress.stage;
+            if (currentStage) {
+                const stageMap = {
+                    'initializing': 'network_discovery',
+                    'network_discovery': 'network_discovery',
+                    'host_discovery': 'host_discovery',
+                    'topology_mapping': 'topology_mapping',
+                    'data_processing': 'data_processing',
+                    'finalizing': 'data_processing'
+                };
+                
+                const stages = ['network_discovery', 'host_discovery', 'topology_mapping', 'data_processing'];
+                stages.forEach(stage => {
+                    const stageElement = document.querySelector(`[data-stage="${stage}"]`);
+                    if (stageElement) {
+                        const isActive = stageMap[currentStage] === stage;
+                        const isCompleted = stages.indexOf(stage) < stages.indexOf(stageMap[currentStage]);
+                        stageElement.classList.toggle('active', isActive);
+                        stageElement.classList.toggle('completed', isCompleted);
+                    }
+                });
+            }
+        } else {
+            // Legacy structure
+            progressValue = data.progress || 0;
+            progressMessage = data.message || 'Scanning...';
+            scannerType = data.scanner_type || 'enhanced';
+        }
+        
         if (progressFill) {
-            progressFill.style.width = `${data.progress || 0}%`;
+            progressFill.style.width = `${progressValue}%`;
         }
         
         if (progressText) {
-            progressText.textContent = data.message || 'Scanning...';
+            progressText.textContent = progressMessage;
         }
         
         if (progressPercentage) {
-            progressPercentage.textContent = `${data.progress || 0}%`;
+            progressPercentage.textContent = `${Math.round(progressValue)}%`;
         }
         
         // Handle job-based scanner specific progress
-        if (data.scanner_type === 'job_based' || data.enhanced) {
+        if (scannerType === 'job_based' || data.enhanced) {
             this.updateJobBasedProgress(data);
-        } else {
-            // Update legacy stage indicators
-            const stages = ['network_discovery', 'host_discovery', 'topology_mapping', 'data_processing'];
-            const currentStageIndex = Math.floor((data.progress || 0) / 25);
-            
-            stages.forEach((stage, index) => {
-                const stageElement = document.querySelector(`[data-stage="${stage}"]`);
-                if (stageElement) {
-                    stageElement.classList.toggle('active', index === currentStageIndex);
-                    stageElement.classList.toggle('completed', index < currentStageIndex);
-                }
-            });
         }
     }
     
@@ -822,20 +851,42 @@ class EnhancedDashboard {
         const activeJobs = document.getElementById('active-jobs');  
         const devicesFound = document.getElementById('devices-found');
         
+        // Handle new progress structure
+        let progressData = data;
+        if (data.progress && typeof data.progress === 'object') {
+            progressData = data.progress;
+        }
+        
+        // Update from details if available
+        if (progressData.details) {
+            if (jobsCompleted && progressData.details.jobs_completed !== undefined) {
+                jobsCompleted.textContent = progressData.details.jobs_completed;
+            }
+            if (activeJobs && progressData.details.active_jobs !== undefined) {
+                activeJobs.textContent = progressData.details.active_jobs;
+            }
+            if (devicesFound && progressData.details.devices_found !== undefined) {
+                devicesFound.textContent = progressData.details.devices_found;
+            }
+        }
+        
+        // Fallback to legacy structure
         if (data.jobs_executed) {
             if (jobsCompleted) jobsCompleted.textContent = data.jobs_executed.completed || 0;
             if (activeJobs) activeJobs.textContent = data.active_jobs || 0;
         }
         
-        if (devicesFound) {
+        if (devicesFound && !progressData.details?.devices_found) {
             devicesFound.textContent = data.devices_found || data.devices_discovered || 0;
         }
         
         // Update current activities
         const jobList = document.getElementById('job-list');
-        if (jobList && data.current_activities) {
+        const activities = progressData.details?.current_activities || data.current_activities;
+        
+        if (jobList && activities) {
             jobList.innerHTML = '';
-            data.current_activities.slice(0, 5).forEach(activity => {
+            activities.slice(0, 5).forEach(activity => {
                 const activityDiv = document.createElement('div');
                 activityDiv.className = 'job-activity';
                 activityDiv.innerHTML = `
