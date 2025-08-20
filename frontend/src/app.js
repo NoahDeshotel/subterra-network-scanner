@@ -36,12 +36,9 @@ class NetScopeApp {
     }
     
     setupWebSocket() {
-        // Connect to the backend WebSocket server
-        const backendUrl = window.location.hostname === 'localhost' 
-            ? 'http://localhost:8080'
-            : `${window.location.protocol}//${window.location.hostname}:8080`;
-        
-        this.socket = io(backendUrl, {
+        // Connect to the backend WebSocket server through nginx proxy
+        // Use the same origin since nginx proxies /socket.io/ to the backend
+        this.socket = io({
             path: '/socket.io/',
             transports: ['websocket', 'polling'],
             reconnection: true,

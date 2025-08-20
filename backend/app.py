@@ -353,13 +353,13 @@ def start_scan():
             'subnet': data.get('subnet', 'auto'),
             'aggressive': data.get('aggressive', False),
             'deep_scan': data.get('deep_scan', False),
-            'vulnerability_scan': data.get('vulnerability_scan', True),
+            'vulnerability_scan': data.get('vulnerability_scan', False),  # Disable by default for faster scans
             'snmp_communities': data.get('snmp_communities', ['public']),
-            'topology_discovery': data.get('topology_discovery', True),
-            'scanner_type': data.get('scanner_type', 'auto')  # auto, job_based, netdisco, enhanced, simple
+            'topology_discovery': data.get('topology_discovery', False),  # Disable by default
+            'scanner_type': data.get('scanner_type', 'simple')  # Use simple scanner by default
         }
         
-        logger.info(f"Starting enhanced scan {scan_id} with config: {scan_config}")
+        logger.info(f"Starting scan {scan_id} with config: {scan_config}")
         
         # Auto-detect subnet if needed
         if scan_config['subnet'] == 'auto':
@@ -482,38 +482,22 @@ def start_scan():
                         loop.close()
                         
                 elif scanner_type == 'auto':
-                    # Auto-select scanner based on requirements
-                    if scan_config.get('topology_discovery', False) or scan_config.get('deep_scan', False) or total_hosts >= 256:
-                        # Use job-based scanner for advanced features or large networks
-                        logger.info(f"Auto-selecting job-based scanner for {scan_config['subnet']} ({total_hosts} hosts)")
-                        from scanner.netdisco_integration import scan_with_netdisco_enhanced
-                        
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        try:
-                            devices, summary = loop.run_until_complete(
-                                scan_with_netdisco_enhanced(scan_config['subnet'], scan_id, scan_tracker)
-                            )
-                        finally:
-                            loop.close()
-                    elif total_hosts >= 128:
-                        # Use old enhanced scanner for medium networks
-                        logger.info(f"Auto-selecting enhanced scanner for {scan_config['subnet']} ({total_hosts} hosts)")
-                        from scanner.netdisco_enhanced_scan import scan_with_enhanced_progress
-                        devices, summary = scan_with_enhanced_progress(
-                            scan_config['subnet'], 
-                            scan_id,
-                            scan_tracker
-                        )
-                    else:
-                        # Use simple scanner for small networks
-                        logger.info(f"Auto-selecting simple scanner for {scan_config['subnet']} ({total_hosts} hosts)")
-                        from scanner.simple_scan import scan_with_progress
-                        devices, summary = scan_with_progress(
-                            scan_config['subnet'], 
-                            scan_id,
-                            scan_tracker
-                        )
+                    # Auto-select scanner based on requirements - prefer simple for reliability
+                    if total_hosts > 256:
+                        # Limit large networks
+                        logger.warning(f"Large network detected ({total_hosts} hosts), limiting to /24")
+                        scan_config['subnet'] = scan_config['subnet'].split('/')[0] + '/24'
+                        network = ipaddress.ip_network(scan_config['subnet'], strict=False)
+                        total_hosts = len(list(network.hosts()))
+                    
+                    # Always use simple scanner for reliability
+                    logger.info(f"Using simple scanner for {scan_config['subnet']} ({total_hosts} hosts)")
+                    from scanner.simple_scan import scan_with_progress
+                    devices, summary = scan_with_progress(
+                        scan_config['subnet'], 
+                        scan_id,
+                        scan_tracker
+                    )
                         
                 elif scanner_type == 'enhanced':
                     # Use old enhanced scanner
@@ -583,23 +567,34 @@ def start_scan():
                 })
         
         # Initialize scan tracking before starting thread
-        scan_tracker.start_scan(scan_id, 0, scan_config)
+        try:
+            logger.info(f"Initializing scan tracking for {scan_id}")
+            scan_tracker.start_scan(scan_id, 0, scan_config)
+        except Exception as e:
+            logger.error(f"Failed to initialize scan tracking: {e}")
         
         # Emit scan started event
-        socketio.emit('scan_started', {
-            'scan_id': scan_id,
-            'config': scan_config,
-            'subnet': scan_config['subnet']
-        })
+        try:
+            logger.info(f"Emitting scan_started event for {scan_id}")
+            socketio.emit('scan_started', {
+                'scan_id': scan_id,
+                'config': scan_config,
+                'subnet': scan_config['subnet']
+            })
+        except Exception as e:
+            logger.error(f"Failed to emit scan_started: {e}")
         
-        scan_thread = threading.Thread(target=run_scan)
+        # Start scan in background thread
+        logger.info(f"Starting scan thread for {scan_id}")
+        scan_thread = threading.Thread(target=run_scan, name=f"scan-{scan_id[:8]}")
         scan_thread.daemon = True
         scan_thread.start()
         
+        logger.info(f"Scan thread started for {scan_id}, returning response")
         return jsonify({
             'success': True,
             'scan_id': scan_id,
-            'message': f'Enhanced scan started for {scan_config["subnet"]}',
+            'message': f'Scan started for {scan_config["subnet"]}',
             'config': scan_config
         })
         
@@ -737,9 +732,12 @@ def get_devices():
         page = int(request.args.get('page', 1))
         per_page = int(request.args.get('per_page', 50))
         
-        # This would use the enhanced inventory manager
-        # For now, return basic device information
-        devices = inventory_manager.get_all_hosts(search, page, per_page)
+        # Get devices from inventory manager
+        try:
+            devices = inventory_manager.get_all_hosts(search, page, per_page)
+        except Exception as e:
+            logger.warning(f"Could not get devices from inventory: {e}")
+            devices = []
         
         # Enhance device data with additional information
         enhanced_devices = []

@@ -69,16 +69,18 @@ class SimpleNetworkScanner:
                 device_info = self._get_host_details(host_ip)
                 self.discovered_devices[host_ip] = device_info
                 
-                # Send device discovered notification via WebSocket
-                if self.socketio:
+                # Send device discovered notification via progress tracker
+                if self.progress_tracker:
                     try:
-                        self.socketio.emit('device_discovered', {
-                            'ip': host_ip,
-                            'hostname': device_info.get('hostname', 'Unknown'),
-                            'mac': device_info.get('mac_address'),
-                            'device_type': device_info.get('device_type', 'unknown'),
-                            'scan_id': self.scan_id
-                        })
+                        # Use progress tracker's websocket callback if available
+                        if hasattr(self.progress_tracker, 'websocket_callback') and self.progress_tracker.websocket_callback:
+                            self.progress_tracker.websocket_callback('device_discovered', {
+                                'ip': host_ip,
+                                'hostname': device_info.get('hostname', 'Unknown'),
+                                'mac': device_info.get('mac_address'),
+                                'device_type': device_info.get('device_type', 'unknown'),
+                                'scan_id': self.scan_id
+                            })
                     except Exception as e:
                         logger.debug(f"Could not emit device discovery: {e}")
                 
@@ -206,15 +208,9 @@ def scan_with_progress(subnet: str, scan_id: str, progress_tracker):
     Run a simple scan with progress tracking
     """
     from scanner.scan_progress_tracker import ScanStage, ScanPriority
-    import socketio
     
-    # Try to get socketio instance for device notifications
+    # Don't import socketio here to avoid circular imports
     sio = None
-    try:
-        from app import socketio as app_socketio
-        sio = app_socketio
-    except:
-        pass
     
     def progress_callback(scan_id: str, message: str, percentage: float = None):
         if progress_tracker:
