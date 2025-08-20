@@ -4,6 +4,10 @@ Enhanced Network Scanner Backend - Netdisco-Inspired Implementation
 Combines modern UI with comprehensive network discovery and inventory management
 """
 
+# Monkey patch eventlet before importing anything else
+import eventlet
+eventlet.monkey_patch()
+
 import os
 import sys
 import asyncio
@@ -25,7 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Configure logging first
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -58,7 +62,7 @@ CORS(app, resources={r"/api/*": {"origins": "*"}})
 socketio = SocketIO(
     app, 
     cors_allowed_origins="*", 
-    async_mode='threading',
+    async_mode='eventlet',  # Use eventlet for proper async WebSocket handling
     logger=True,
     engineio_logger=False,
     ping_timeout=60,
@@ -620,8 +624,58 @@ def start_scan():
                     active_scans[scan_id]['end_time'] = datetime.now().isoformat()
                     logger.info(f"[SCAN-THREAD] Active scan updated with status: {scan_status}")
                 
+                # Save scan results to database
+                logger.info(f"[SCAN-THREAD] Step 6: Saving scan results to database")
+                if devices and len(devices) > 0:
+                    try:
+                        logger.info(f"[SCAN-THREAD] Processing {len(devices)} devices for database storage")
+                        
+                        # Create scan metadata
+                        scan_metadata = {
+                            'scan_id': scan_id,
+                            'subnet': scan_config['subnet'],
+                            'scan_type': scan_config.get('scanner_type', 'simple'),
+                            'start_time': active_scans[scan_id]['start_time'],
+                            'end_time': datetime.now().isoformat(),
+                            'total_hosts': summary.get('total_hosts', 0),
+                            'active_hosts': summary.get('active_hosts', len(devices))
+                        }
+                        
+                        # Convert devices to dict format expected by process_enhanced_scan
+                        devices_dict = {}
+                        
+                        # Check if devices is already a dict (from main_scanner)
+                        if isinstance(devices, dict):
+                            logger.debug(f"[SCAN-THREAD] Devices is already a dict with {len(devices)} entries")
+                            devices_dict = devices
+                        elif isinstance(devices, list):
+                            # If it's a list, convert to dict
+                            for device in devices:
+                                logger.debug(f"[SCAN-THREAD] Processing device from list: {device}")
+                                if isinstance(device, dict):
+                                    # Check for both 'ip' and 'ip_address' fields
+                                    ip_key = device.get('ip') or device.get('ip_address')
+                                    if ip_key:
+                                        devices_dict[ip_key] = device
+                                        logger.debug(f"[SCAN-THREAD] Added device {ip_key} to devices_dict")
+                                    else:
+                                        logger.warning(f"[SCAN-THREAD] Device has no IP field: {device}")
+                        else:
+                            logger.warning(f"[SCAN-THREAD] Unexpected devices type: {type(devices)}")
+                        
+                        # Process and save to database
+                        logger.info(f"[SCAN-THREAD] Calling process_enhanced_scan with {len(devices_dict)} devices")
+                        import asyncio
+                        inventory_results = asyncio.run(
+                            process_enhanced_scan(devices_dict, scan_id, scan_metadata)
+                        )
+                        logger.info(f"[SCAN-THREAD] ✅ Scan results saved to database: {inventory_results}")
+                        
+                    except Exception as e:
+                        logger.error(f"[SCAN-THREAD] ❌ Failed to save scan results to database: {e}", exc_info=True)
+                
                 # Complete the scan tracking
-                logger.info(f"[SCAN-THREAD] Step 6: Completing scan tracking")
+                logger.info(f"[SCAN-THREAD] Step 7: Completing scan tracking")
                 if scan_tracker:
                     if summary.get('scan_successful', False):
                         msg = f"Scan completed: {len(devices)} devices found"
@@ -633,7 +687,7 @@ def start_scan():
                         scan_tracker.complete_scan(scan_id, False, error_msg)
                 
                 # Notify completion via WebSocket
-                logger.info(f"[SCAN-THREAD] Step 7: Emitting scan_completed event")
+                logger.info(f"[SCAN-THREAD] Step 8: Emitting scan_completed event")
                 completion_data = {
                     'scan_id': scan_id,
                     'success': summary.get('scan_successful', False),
@@ -672,6 +726,66 @@ def start_scan():
         
     except Exception as e:
         logger.error(f"Error starting scan: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/scan/<scan_id>/results')
+def get_scan_results(scan_id):
+    """Get scan results"""
+    try:
+        # Check if scan exists in active or completed scans
+        if scan_id in active_scans:
+            scan_info = active_scans[scan_id]
+            if scan_info.get('status') == 'completed':
+                # Get devices from the summary
+                devices_found = scan_info.get('devices_found', 0)
+                summary = scan_info.get('summary', {})
+                
+                # Get actual devices from database (those added during this scan)
+                devices = []
+                try:
+                    # Get all devices discovered in the time window of this scan
+                    start_time = scan_info.get('start_time')
+                    end_time = scan_info.get('end_time', datetime.now().isoformat())
+                    
+                    # For now, just get the most recent devices
+                    devices_data = inventory_manager.get_all_hosts(per_page=devices_found)
+                    devices = devices_data.get('devices', [])
+                except Exception as e:
+                    logger.error(f"Failed to get devices for scan {scan_id}: {e}")
+                
+                return jsonify({
+                    'scan_id': scan_id,
+                    'status': 'completed',
+                    'devices': devices,
+                    'summary': summary
+                })
+            else:
+                return jsonify({
+                    'scan_id': scan_id,
+                    'status': scan_info.get('status', 'running'),
+                    'message': 'Scan not yet completed'
+                }), 202
+        else:
+            # Check scan tracker for completed scans
+            scan_tracker = get_scan_tracker()
+            progress = scan_tracker.get_progress(scan_id)
+            
+            if progress:
+                return jsonify({
+                    'scan_id': scan_id,
+                    'status': progress.stage.value,
+                    'devices': progress.scan_results,
+                    'summary': {
+                        'targets_completed': progress.targets_completed,
+                        'targets_successful': progress.targets_successful,
+                        'targets_failed': progress.targets_failed
+                    }
+                })
+            else:
+                return jsonify({'error': 'Scan not found'}), 404
+                
+    except Exception as e:
+        logger.error(f"Error getting scan results: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/scan/<scan_id>/status')
@@ -820,27 +934,31 @@ def get_devices():
         
         # Get devices from inventory manager
         try:
-            devices = inventory_manager.get_all_hosts(search, page, per_page)
+            result = inventory_manager.get_all_hosts(search, page, per_page)
+            devices = result.get('devices', []) if isinstance(result, dict) else []
+            total = result.get('total', 0) if isinstance(result, dict) else 0
         except Exception as e:
             logger.warning(f"Could not get devices from inventory: {e}")
             devices = []
+            total = 0
         
         # Enhance device data with additional information
         enhanced_devices = []
         for device in devices:
-            enhanced_device = device.copy()
-            enhanced_device.update({
-                'device_type': enhanced_device.get('device_type', 'unknown'),
-                'discovery_methods': ['nmap'],  # Would come from database
-                'confidence_score': 1.0,
-                'last_changed': enhanced_device.get('last_seen'),
-                'topology_connections': 0  # Would be calculated
-            })
-            enhanced_devices.append(enhanced_device)
+            if isinstance(device, dict):
+                enhanced_device = device.copy()
+                enhanced_device.update({
+                    'device_type': enhanced_device.get('device_type', 'unknown'),
+                    'discovery_methods': enhanced_device.get('discovery_methods', ['nmap']),
+                    'confidence_score': enhanced_device.get('confidence_score', 1.0),
+                    'last_changed': enhanced_device.get('last_changed') or enhanced_device.get('last_seen'),
+                    'topology_connections': enhanced_device.get('topology_connections', 0)
+                })
+                enhanced_devices.append(enhanced_device)
         
         return jsonify({
             'devices': enhanced_devices,
-            'total': len(enhanced_devices),
+            'total': total,
             'page': page,
             'per_page': per_page
         })
@@ -1147,14 +1265,19 @@ def clear_database():
 # WebSocket events
 @socketio.on('connect')
 def handle_connect():
-    """Handle client connection"""
+    """Handle client connection and start background updates"""
     try:
         logger.info(f'Client connected: {request.sid}')
         emit('connected', {'message': 'Connected to enhanced network scanner', 'sid': request.sid})
-        return True
+        
+        # Start background update thread for real-time data (only once)
+        if not hasattr(app, 'update_thread_started'):
+            app.update_thread_started = True
+            logger.info('Starting background update thread')
+            socketio.start_background_task(send_periodic_updates)
     except Exception as e:
         logger.error(f'Error in connect handler: {e}')
-        return False
+        disconnect()
 
 @socketio.on('disconnect')
 def handle_disconnect():
@@ -1194,13 +1317,7 @@ def send_periodic_updates():
         
         socketio.sleep(30)
 
-# Start background update thread
-@socketio.on('connect')
-def start_background_updates():
-    """Start background update thread for real-time data"""
-    if not hasattr(app, 'update_thread_started'):
-        app.update_thread_started = True
-        socketio.start_background_task(send_periodic_updates)
+# Background update thread is now started in handle_connect()
 
 if __name__ == '__main__':
     logger.info("🚀 Enhanced Network Scanner Backend starting...")
@@ -1244,12 +1361,14 @@ if __name__ == '__main__':
     logger.info(f"🧪 Run 'python test_api.py' to test all endpoints")
     
     try:
+        # Use development configuration with eventlet (production should use gunicorn)
         socketio.run(
             app, 
             host='0.0.0.0', 
             port=8080, 
-            debug=False, 
-            allow_unsafe_werkzeug=True
+            debug=False,
+            use_reloader=False,
+            log_output=True
         )
     except KeyboardInterrupt:
         logger.info("🛑 Server shutdown requested")

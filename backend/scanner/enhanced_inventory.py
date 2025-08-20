@@ -1565,6 +1565,96 @@ class EnhancedInventoryManager:
         except Exception as e:
             logger.error(f"Failed to get device by IP {ip}: {e}")
             return None
+    
+    def get_host_details(self, ip: str) -> Optional[Dict]:
+        """Get detailed host information (alias for get_device_by_ip)"""
+        device = self.get_device_by_ip(ip)
+        if device:
+            # Add additional details
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    
+                    # Get open ports
+                    cursor.execute('''
+                        SELECT port, protocol, service, state 
+                        FROM device_ports 
+                        WHERE device_id = (SELECT id FROM devices WHERE ip = ?)
+                    ''', (ip,))
+                    device['ports'] = [dict(zip(['port', 'protocol', 'service', 'state'], row)) 
+                                     for row in cursor.fetchall()]
+                    
+                    # Get vulnerabilities
+                    cursor.execute('''
+                        SELECT cve_id, cvss_score, description 
+                        FROM device_vulnerabilities 
+                        WHERE device_id = (SELECT id FROM devices WHERE ip = ?)
+                    ''', (ip,))
+                    device['vulnerabilities'] = [dict(zip(['cve_id', 'cvss_score', 'description'], row)) 
+                                                for row in cursor.fetchall()]
+                    
+            except Exception as e:
+                logger.error(f"Failed to get additional details for {ip}: {e}")
+        
+        return device
+    
+    def get_all_hosts(self, search: str = None, page: int = 1, per_page: int = 50) -> Dict:
+        """Get all hosts with pagination and search"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                # Build query
+                base_query = '''
+                    SELECT d.*, 
+                        (SELECT COUNT(*) FROM device_ports WHERE device_id = d.id AND state = 'open') as open_ports,
+                        (SELECT COUNT(*) FROM device_vulnerabilities WHERE device_id = d.id) as vulnerabilities,
+                        (SELECT COUNT(*) FROM topology WHERE device_id = d.id OR neighbor_device_id = d.id) as topology_connections,
+                        (SELECT MAX(cvss_score) FROM device_vulnerabilities WHERE device_id = d.id) as max_cvss
+                    FROM devices d
+                '''
+                
+                if search:
+                    base_query += " WHERE ip LIKE ? OR hostname LIKE ? OR device_type LIKE ?"
+                    search_param = f"%{search}%"
+                    params = [search_param, search_param, search_param]
+                else:
+                    params = []
+                
+                # Get total count
+                count_query = f"SELECT COUNT(*) FROM devices"
+                if search:
+                    count_query += " WHERE ip LIKE ? OR hostname LIKE ? OR device_type LIKE ?"
+                cursor.execute(count_query, params)
+                total = cursor.fetchone()[0]
+                
+                # Get paginated results
+                offset = (page - 1) * per_page
+                paginated_query = base_query + f" LIMIT {per_page} OFFSET {offset}"
+                cursor.execute(paginated_query, params)
+                
+                devices = []
+                for row in cursor.fetchall():
+                    device = dict(row)
+                    # Parse JSON fields
+                    if device.get('discovery_methods'):
+                        try:
+                            device['discovery_methods'] = json.loads(device['discovery_methods'])
+                        except:
+                            device['discovery_methods'] = ['nmap']
+                    devices.append(device)
+                
+                return {
+                    'devices': devices,
+                    'total': total,
+                    'page': page,
+                    'per_page': per_page
+                }
+                
+        except Exception as e:
+            logger.error(f"Failed to get all hosts: {e}")
+            return {'devices': [], 'total': 0, 'page': page, 'per_page': per_page}
 
     async def add_device(self, device_data: Dict, scan_id: str = None):
         """Add a new device to the inventory"""
