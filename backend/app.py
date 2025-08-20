@@ -14,9 +14,10 @@ import sqlite3
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO, emit, disconnect
 import threading
 import json
+import time
 from pathlib import Path
 
 # Add the current directory to Python path for imports
@@ -53,8 +54,16 @@ app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'enhanced-network-scanner-key
 # Enable CORS
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
-# Initialize SocketIO
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+# Initialize SocketIO with proper configuration
+socketio = SocketIO(
+    app, 
+    cors_allowed_origins="*", 
+    async_mode='threading',
+    logger=True,
+    engineio_logger=False,
+    ping_timeout=60,
+    ping_interval=25
+)
 
 # Set up progress tracking WebSocket callback
 def websocket_progress_callback(event_type: str, data: dict):
@@ -221,7 +230,7 @@ def get_available_scanners():
     """Get list of available scanners with their capabilities"""
     try:
         # Import scanner capabilities
-        from scanner.netdisco_integration import get_scan_capabilities, get_supported_protocols
+        from scanner.scanner_capabilities import get_scan_capabilities, get_supported_protocols
         
         scanners = {
             'simple': {
@@ -283,7 +292,7 @@ def get_available_scanners():
 def get_scanner_capabilities():
     """Get detailed capabilities of the enhanced scanner system"""
     try:
-        from scanner.netdisco_integration import (
+        from scanner.scanner_capabilities import (
             get_scan_capabilities, get_supported_protocols, 
             get_device_classification_types, get_vendor_database_info
         )
@@ -339,6 +348,28 @@ def get_status():
         }
     })
 
+@app.route('/api/scan/test', methods=['GET'])
+def test_scan():
+    """Test endpoint to verify scanning works"""
+    try:
+        # Simple test to verify components work
+        from scanner.main_scanner import scan_single_host
+        
+        # Test localhost
+        result = scan_single_host('127.0.0.1')
+        
+        return jsonify({
+            'success': True,
+            'message': 'Scanner test successful',
+            'localhost_scan': result
+        })
+    except Exception as e:
+        logger.error(f"Scanner test failed: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
 @app.route('/api/scan/start', methods=['POST'])
 def start_scan():
     """Start enhanced network scan"""
@@ -360,6 +391,14 @@ def start_scan():
         }
         
         logger.info(f"Starting scan {scan_id} with config: {scan_config}")
+        
+        # IMPORTANT: Return response immediately, do everything else in background
+        response = jsonify({
+            'success': True,
+            'scan_id': scan_id,
+            'message': f'Scan initiated',
+            'config': scan_config
+        })
         
         # Auto-detect subnet if needed
         if scan_config['subnet'] == 'auto':
@@ -457,91 +496,59 @@ def start_scan():
             scan_config['subnet'] = detected_subnet
             logger.info(f"Final subnet for scanning: {scan_config['subnet']}")
         
-        # Start scan in background thread
-        def run_scan():
+        
+        # Store scan in active scans
+        active_scans[scan_id] = {
+            'status': 'initializing',
+            'config': scan_config,
+            'start_time': datetime.now().isoformat()
+        }
+        
+        # Background task to start everything
+        def start_scan_background():
+            logger.info(f"[SCAN-THREAD] Thread function called for scan {scan_id}")
             try:
-                # Choose scanner based on subnet size and scan type
-                network = ipaddress.ip_network(scan_config['subnet'], strict=False)
-                total_hosts = len(list(network.hosts()))
-                
-                # Get scanner preference from config
-                scanner_type = scan_config.get('scanner_type', 'auto')
-                
-                if scanner_type == 'job_based' or scanner_type == 'netdisco':
-                    # Use new job-based Netdisco-inspired scanner
-                    logger.info(f"Using job-based Netdisco scanner for {scan_config['subnet']}")
-                    from scanner.netdisco_integration import scan_with_netdisco_enhanced
-                    
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
+                # Initialize scan tracking
+                logger.info(f"[SCAN-THREAD] Attempting to initialize scan tracker for {scan_id}")
+                logger.info(f"[SCAN-THREAD] scan_tracker is: {scan_tracker}")
+                if scan_tracker:
                     try:
-                        devices, summary = loop.run_until_complete(
-                            scan_with_netdisco_enhanced(scan_config['subnet'], scan_id, scan_tracker)
-                        )
-                    finally:
-                        loop.close()
-                        
-                elif scanner_type == 'auto':
-                    # Auto-select scanner based on requirements - prefer simple for reliability
-                    if total_hosts > 256:
-                        # Limit large networks
-                        logger.warning(f"Large network detected ({total_hosts} hosts), limiting to /24")
-                        scan_config['subnet'] = scan_config['subnet'].split('/')[0] + '/24'
-                        network = ipaddress.ip_network(scan_config['subnet'], strict=False)
-                        total_hosts = len(list(network.hosts()))
-                    
-                    # Always use simple scanner for reliability
-                    logger.info(f"Using simple scanner for {scan_config['subnet']} ({total_hosts} hosts)")
-                    from scanner.simple_scan import scan_with_progress
-                    devices, summary = scan_with_progress(
-                        scan_config['subnet'], 
-                        scan_id,
-                        scan_tracker
-                    )
-                        
-                elif scanner_type == 'enhanced':
-                    # Use old enhanced scanner
-                    logger.info(f"Using enhanced scanner for {scan_config['subnet']}")
-                    from scanner.netdisco_enhanced_scan import scan_with_enhanced_progress
-                    devices, summary = scan_with_enhanced_progress(
-                        scan_config['subnet'], 
-                        scan_id,
-                        scan_tracker
-                    )
-                    
-                elif scanner_type == 'simple':
-                    # Use simple scanner
-                    logger.info(f"Using simple scanner for {scan_config['subnet']}")
-                    from scanner.simple_scan import scan_with_progress
-                    devices, summary = scan_with_progress(
-                        scan_config['subnet'], 
-                        scan_id,
-                        scan_tracker
-                    )
+                        scan_tracker.start_scan(scan_id, 0, scan_config)
+                        logger.info(f"[SCAN-THREAD] Scan tracker initialized for {scan_id}")
+                    except Exception as e:
+                        logger.error(f"[SCAN-THREAD] Failed to initialize scan tracker: {e}", exc_info=True)
                 else:
-                    # Fallback to job-based scanner for unknown types
-                    logger.warning(f"Unknown scanner type '{scanner_type}', falling back to job-based scanner")
-                    from scanner.netdisco_integration import scan_with_netdisco_enhanced
-                    
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    try:
-                        devices, summary = loop.run_until_complete(
-                            scan_with_netdisco_enhanced(scan_config['subnet'], scan_id, scan_tracker)
-                        )
-                    finally:
-                        loop.close()
+                    logger.warning(f"[SCAN-THREAD] scan_tracker is None, skipping initialization")
                 
-                # Process results through inventory manager if devices found
-                if devices:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    try:
-                        result_data = loop.run_until_complete(
-                            process_enhanced_scan(devices, scan_id)
-                        )
-                    finally:
-                        loop.close()
+                # Emit scan started event
+                logger.info(f"[SCAN-THREAD] Attempting to emit scan_started for {scan_id}")
+                try:
+                    socketio.emit('scan_started', {
+                        'scan_id': scan_id,
+                        'config': scan_config,
+                        'subnet': scan_config['subnet']
+                    })
+                    logger.info(f"[SCAN-THREAD] Emitted scan_started for {scan_id}")
+                except Exception as e:
+                    logger.error(f"[SCAN-THREAD] Failed to emit scan_started: {e}")
+                
+                # Execute the scan based on scanner type
+                scanner_type = scan_config.get('scanner_type', 'simple')
+                logger.info(f"[SCAN-THREAD] Starting {scanner_type} scan for {scan_config['subnet']}")
+                
+                # Always use the robust scanner for now
+                from scanner.main_scanner import scan_with_robust_progress
+                devices, summary = scan_with_robust_progress(
+                    scan_config['subnet'], 
+                    scan_id,
+                    scan_tracker
+                )
+                
+                # Update active scans
+                if scan_id in active_scans:
+                    active_scans[scan_id]['status'] = 'completed' if summary.get('scan_successful', False) else 'failed'
+                    active_scans[scan_id]['devices_found'] = len(devices)
+                    active_scans[scan_id]['summary'] = summary
                 
                 # Complete the scan tracking
                 if summary.get('scan_successful', False):
@@ -557,46 +564,27 @@ def start_scan():
                     'summary': summary
                 })
                 
+                logger.info(f"Scan {scan_id} completed successfully")
+                
             except Exception as e:
-                logger.error(f"Scan {scan_id} failed: {e}")
-                scan_tracker.complete_scan(scan_id, False, f"Scan failed: {str(e)}")
+                logger.error(f"Scan {scan_id} failed in background thread: {e}", exc_info=True)
+                if scan_id in active_scans:
+                    active_scans[scan_id]['status'] = 'failed'
+                    active_scans[scan_id]['error'] = str(e)
                 socketio.emit('scan_completed', {
                     'scan_id': scan_id,
                     'success': False,
                     'error': str(e)
                 })
         
-        # Initialize scan tracking before starting thread
-        try:
-            logger.info(f"Initializing scan tracking for {scan_id}")
-            scan_tracker.start_scan(scan_id, 0, scan_config)
-        except Exception as e:
-            logger.error(f"Failed to initialize scan tracking: {e}")
-        
-        # Emit scan started event
-        try:
-            logger.info(f"Emitting scan_started event for {scan_id}")
-            socketio.emit('scan_started', {
-                'scan_id': scan_id,
-                'config': scan_config,
-                'subnet': scan_config['subnet']
-            })
-        except Exception as e:
-            logger.error(f"Failed to emit scan_started: {e}")
-        
-        # Start scan in background thread
+        # Start background thread
         logger.info(f"Starting scan thread for {scan_id}")
-        scan_thread = threading.Thread(target=run_scan, name=f"scan-{scan_id[:8]}")
+        scan_thread = threading.Thread(target=start_scan_background, name=f"scan-{scan_id[:8]}")
         scan_thread.daemon = True
         scan_thread.start()
         
-        logger.info(f"Scan thread started for {scan_id}, returning response")
-        return jsonify({
-            'success': True,
-            'scan_id': scan_id,
-            'message': f'Scan started for {scan_config["subnet"]}',
-            'config': scan_config
-        })
+        logger.info(f"Returning response immediately for {scan_id}")
+        return response
         
     except Exception as e:
         logger.error(f"Error starting scan: {e}")
@@ -606,6 +594,20 @@ def start_scan():
 def get_scan_status(scan_id):
     """Get detailed scan status with progress tracking"""
     try:
+        # First check active scans
+        if scan_id in active_scans:
+            scan_info = active_scans[scan_id]
+            return jsonify({
+                'scan_id': scan_id,
+                'status': scan_info.get('status', 'unknown'),
+                'config': scan_info.get('config', {}),
+                'devices_found': scan_info.get('devices_found', 0),
+                'summary': scan_info.get('summary', {}),
+                'start_time': scan_info.get('start_time'),
+                'active': scan_info.get('status') in ['initializing', 'running']
+            })
+        
+        # Try scan tracker
         progress = scan_tracker.get_progress(scan_id)
         if not progress:
             return jsonify({'error': 'Scan not found'}), 404
@@ -1062,13 +1064,21 @@ def clear_database():
 @socketio.on('connect')
 def handle_connect():
     """Handle client connection"""
-    logger.info('Client connected')
-    emit('connected', {'message': 'Connected to enhanced network scanner'})
+    try:
+        logger.info(f'Client connected: {request.sid}')
+        emit('connected', {'message': 'Connected to enhanced network scanner', 'sid': request.sid})
+        return True
+    except Exception as e:
+        logger.error(f'Error in connect handler: {e}')
+        return False
 
 @socketio.on('disconnect')
 def handle_disconnect():
     """Handle client disconnection"""
-    logger.info('Client disconnected')
+    try:
+        logger.info(f'Client disconnected: {request.sid}')
+    except Exception as e:
+        logger.error(f'Error in disconnect handler: {e}')
 
 @socketio.on('subscribe_updates')
 def handle_subscribe_updates(data):
