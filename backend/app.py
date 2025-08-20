@@ -353,22 +353,109 @@ def start_scan():
             'subnet': data.get('subnet', 'auto'),
             'aggressive': data.get('aggressive', False),
             'deep_scan': data.get('deep_scan', False),
-            'vulnerability_scan': data.get('vulnerability_scan', True),
+            'vulnerability_scan': data.get('vulnerability_scan', False),  # Disable by default for faster scans
             'snmp_communities': data.get('snmp_communities', ['public']),
-            'topology_discovery': data.get('topology_discovery', True),
-            'scanner_type': data.get('scanner_type', 'auto')  # auto, job_based, netdisco, enhanced, simple
+            'topology_discovery': data.get('topology_discovery', False),  # Disable by default
+            'scanner_type': data.get('scanner_type', 'simple')  # Use simple scanner by default
         }
         
-        logger.info(f"Starting enhanced scan {scan_id} with config: {scan_config}")
+        logger.info(f"Starting scan {scan_id} with config: {scan_config}")
         
         # Auto-detect subnet if needed
         if scan_config['subnet'] == 'auto':
             import socket
-            hostname = socket.gethostname()
-            local_ip = socket.gethostbyname(hostname)
-            # Convert to /24 subnet
-            subnet_parts = local_ip.split('.')
-            scan_config['subnet'] = f"{'.'.join(subnet_parts[:3])}.0/24"
+            import netifaces
+            import platform
+            
+            # Get the host's actual network interface (not Docker's)
+            detected_subnet = None
+            
+            try:
+                # Method 1: Try to get the default gateway interface
+                gateways = netifaces.gateways()
+                if 'default' in gateways and netifaces.AF_INET in gateways['default']:
+                    default_interface = gateways['default'][netifaces.AF_INET][1]
+                    addrs = netifaces.ifaddresses(default_interface)
+                    if netifaces.AF_INET in addrs:
+                        ip_info = addrs[netifaces.AF_INET][0]
+                        ip_addr = ip_info['addr']
+                        netmask = ip_info.get('netmask', '255.255.255.0')
+                        
+                        # Calculate network address
+                        ip_obj = ipaddress.ip_interface(f"{ip_addr}/{netmask}")
+                        detected_subnet = str(ip_obj.network)
+                        logger.info(f"Detected host network from default interface: {detected_subnet}")
+            except Exception as e:
+                logger.warning(f"Could not detect from default interface: {e}")
+            
+            # Method 2: Fallback to examining all interfaces
+            if not detected_subnet:
+                try:
+                    for interface in netifaces.interfaces():
+                        # Skip loopback and docker interfaces
+                        if interface.startswith(('lo', 'docker', 'br-')):
+                            continue
+                        
+                        addrs = netifaces.ifaddresses(interface)
+                        if netifaces.AF_INET in addrs:
+                            for addr_info in addrs[netifaces.AF_INET]:
+                                ip = addr_info['addr']
+                                # Skip localhost and docker IPs
+                                if ip.startswith(('127.', '172.17.', '172.18.', '172.19.')):
+                                    continue
+                                
+                                netmask = addr_info.get('netmask', '255.255.255.0')
+                                ip_obj = ipaddress.ip_interface(f"{ip}/{netmask}")
+                                detected_subnet = str(ip_obj.network)
+                                logger.info(f"Detected host network from interface {interface}: {detected_subnet}")
+                                break
+                        
+                        if detected_subnet:
+                            break
+                except Exception as e:
+                    logger.warning(f"Could not detect from interfaces: {e}")
+            
+            # Method 3: Use environment variable if set (for Docker - highest priority)
+            if not detected_subnet and os.getenv('HOST_SUBNET'):
+                detected_subnet = os.getenv('HOST_SUBNET')
+                logger.info(f"Using HOST_SUBNET environment variable: {detected_subnet}")
+            
+            # Method 4: Try external connection method
+            if not detected_subnet:
+                try:
+                    # Connect to external host to determine local IP
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.connect(("8.8.8.8", 80))
+                    local_ip = s.getsockname()[0]
+                    s.close()
+                    
+                    # Convert to /24 subnet
+                    subnet_parts = local_ip.split('.')
+                    detected_subnet = f"{'.'.join(subnet_parts[:3])}.0/24"
+                    logger.info(f"Detected subnet via external connection: {detected_subnet}")
+                except Exception as e:
+                    logger.warning(f"Could not detect via external connection: {e}")
+            
+            # Method 5: Final fallback
+            if not detected_subnet:
+                hostname = socket.gethostname()
+                local_ip = socket.gethostbyname(hostname)
+                
+                # Check if it's a Docker IP and use a sensible default
+                if local_ip.startswith(('172.17.', '172.18.', '172.19.', '172.20.', '172.21.', '172.22.', '172.23.')):
+                    # Common home network subnets to try
+                    default_subnets = ['192.168.1.0/24', '192.168.0.0/24', '10.0.0.0/24', '10.1.0.0/24']
+                    detected_subnet = default_subnets[0]  # Default to most common home subnet
+                    logger.warning(f"Detected Docker IP {local_ip}, using common home subnet: {detected_subnet}")
+                    logger.warning("⚠️  Consider setting HOST_SUBNET environment variable for accurate scanning")
+                else:
+                    # Convert to /24 subnet
+                    subnet_parts = local_ip.split('.')
+                    detected_subnet = f"{'.'.join(subnet_parts[:3])}.0/24"
+                    logger.info(f"Using fallback subnet detection: {detected_subnet}")
+            
+            scan_config['subnet'] = detected_subnet
+            logger.info(f"Final subnet for scanning: {scan_config['subnet']}")
         
         # Start scan in background thread
         def run_scan():
@@ -395,38 +482,22 @@ def start_scan():
                         loop.close()
                         
                 elif scanner_type == 'auto':
-                    # Auto-select scanner based on requirements
-                    if scan_config.get('topology_discovery', False) or scan_config.get('deep_scan', False) or total_hosts >= 256:
-                        # Use job-based scanner for advanced features or large networks
-                        logger.info(f"Auto-selecting job-based scanner for {scan_config['subnet']} ({total_hosts} hosts)")
-                        from scanner.netdisco_integration import scan_with_netdisco_enhanced
-                        
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        try:
-                            devices, summary = loop.run_until_complete(
-                                scan_with_netdisco_enhanced(scan_config['subnet'], scan_id, scan_tracker)
-                            )
-                        finally:
-                            loop.close()
-                    elif total_hosts >= 128:
-                        # Use old enhanced scanner for medium networks
-                        logger.info(f"Auto-selecting enhanced scanner for {scan_config['subnet']} ({total_hosts} hosts)")
-                        from scanner.netdisco_enhanced_scan import scan_with_enhanced_progress
-                        devices, summary = scan_with_enhanced_progress(
-                            scan_config['subnet'], 
-                            scan_id,
-                            scan_tracker
-                        )
-                    else:
-                        # Use simple scanner for small networks
-                        logger.info(f"Auto-selecting simple scanner for {scan_config['subnet']} ({total_hosts} hosts)")
-                        from scanner.simple_scan import scan_with_progress
-                        devices, summary = scan_with_progress(
-                            scan_config['subnet'], 
-                            scan_id,
-                            scan_tracker
-                        )
+                    # Auto-select scanner based on requirements - prefer simple for reliability
+                    if total_hosts > 256:
+                        # Limit large networks
+                        logger.warning(f"Large network detected ({total_hosts} hosts), limiting to /24")
+                        scan_config['subnet'] = scan_config['subnet'].split('/')[0] + '/24'
+                        network = ipaddress.ip_network(scan_config['subnet'], strict=False)
+                        total_hosts = len(list(network.hosts()))
+                    
+                    # Always use simple scanner for reliability
+                    logger.info(f"Using simple scanner for {scan_config['subnet']} ({total_hosts} hosts)")
+                    from scanner.simple_scan import scan_with_progress
+                    devices, summary = scan_with_progress(
+                        scan_config['subnet'], 
+                        scan_id,
+                        scan_tracker
+                    )
                         
                 elif scanner_type == 'enhanced':
                     # Use old enhanced scanner
@@ -496,23 +567,34 @@ def start_scan():
                 })
         
         # Initialize scan tracking before starting thread
-        scan_tracker.start_scan(scan_id, 0, scan_config)
+        try:
+            logger.info(f"Initializing scan tracking for {scan_id}")
+            scan_tracker.start_scan(scan_id, 0, scan_config)
+        except Exception as e:
+            logger.error(f"Failed to initialize scan tracking: {e}")
         
         # Emit scan started event
-        socketio.emit('scan_started', {
-            'scan_id': scan_id,
-            'config': scan_config,
-            'subnet': scan_config['subnet']
-        })
+        try:
+            logger.info(f"Emitting scan_started event for {scan_id}")
+            socketio.emit('scan_started', {
+                'scan_id': scan_id,
+                'config': scan_config,
+                'subnet': scan_config['subnet']
+            })
+        except Exception as e:
+            logger.error(f"Failed to emit scan_started: {e}")
         
-        scan_thread = threading.Thread(target=run_scan)
+        # Start scan in background thread
+        logger.info(f"Starting scan thread for {scan_id}")
+        scan_thread = threading.Thread(target=run_scan, name=f"scan-{scan_id[:8]}")
         scan_thread.daemon = True
         scan_thread.start()
         
+        logger.info(f"Scan thread started for {scan_id}, returning response")
         return jsonify({
             'success': True,
             'scan_id': scan_id,
-            'message': f'Enhanced scan started for {scan_config["subnet"]}',
+            'message': f'Scan started for {scan_config["subnet"]}',
             'config': scan_config
         })
         
@@ -650,9 +732,12 @@ def get_devices():
         page = int(request.args.get('page', 1))
         per_page = int(request.args.get('per_page', 50))
         
-        # This would use the enhanced inventory manager
-        # For now, return basic device information
-        devices = inventory_manager.get_all_hosts(search, page, per_page)
+        # Get devices from inventory manager
+        try:
+            devices = inventory_manager.get_all_hosts(search, page, per_page)
+        except Exception as e:
+            logger.warning(f"Could not get devices from inventory: {e}")
+            devices = []
         
         # Enhance device data with additional information
         enhanced_devices = []
