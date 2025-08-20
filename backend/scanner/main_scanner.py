@@ -18,46 +18,65 @@ logger = logging.getLogger(__name__)
 
 def emit_progress(scan_id: str, percentage: int, message: str, scan_tracker=None):
     """Emit progress update via WebSocket"""
+    logger.info(f"[PROGRESS] {scan_id}: {percentage}% - {message}")
+    
     try:
         if scan_tracker:
+            logger.debug(f"[PROGRESS] Updating scan tracker for {scan_id}")
             scan_tracker.update_progress(
                 scan_id,
                 percentage,
                 message,
                 stage='scanning'
             )
+            logger.debug(f"[PROGRESS] Scan tracker updated successfully")
+        else:
+            logger.debug(f"[PROGRESS] No scan tracker available")
         
         # Also emit via socketio if available
         try:
             from flask_socketio import emit as socketio_emit
-            socketio_emit('scan_progress', {
+            emit_data = {
                 'scan_id': scan_id,
                 'progress': percentage,
                 'percentage': percentage,
                 'message': message,
                 'stage': 'scanning'
-            }, broadcast=True, namespace='/')
-            logger.info(f"Emitted progress: {percentage}% - {message}")
+            }
+            logger.debug(f"[PROGRESS] Emitting WebSocket event: {emit_data}")
+            socketio_emit('scan_progress', emit_data, broadcast=True, namespace='/')
+            logger.info(f"[PROGRESS] ✅ WebSocket progress emitted: {percentage}% - {message}")
         except Exception as e:
-            logger.debug(f"Could not emit via socketio: {e}")
+            logger.debug(f"[PROGRESS] Could not emit via socketio: {e}")
             
     except Exception as e:
-        logger.error(f"Error emitting progress: {e}")
+        logger.error(f"[PROGRESS] ❌ Error emitting progress: {e}", exc_info=True)
 
 def ping_host(ip: str, timeout: float = 1.0) -> bool:
     """Check if host responds to ping"""
     try:
         param = '-n' if platform.system().lower() == 'windows' else '-c'
         command = ['ping', param, '1', '-W', str(int(timeout * 1000)), str(ip)]
+        logger.debug(f"[PING] Running command: {' '.join(command)}")
+        
         result = subprocess.run(
             command,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=timeout + 0.5
         )
-        return result.returncode == 0
+        
+        success = result.returncode == 0
+        if success:
+            logger.debug(f"[PING] ✅ Host {ip} is reachable via ping")
+        else:
+            logger.debug(f"[PING] Host {ip} did not respond to ping")
+        return success
+    except subprocess.TimeoutExpired:
+        logger.debug(f"[PING] Timeout for {ip}")
+        return False
     except Exception as e:
-        logger.debug(f"Ping failed for {ip}: {e}")
+        logger.debug(f"[PING] Error pinging {ip}: {e}")
         return False
 
 def tcp_scan_host(ip: str, ports: List[int] = None, timeout: float = 0.5) -> Dict:
@@ -105,16 +124,22 @@ def scan_single_host(ip: str, scan_id: str = None, scan_tracker=None) -> Optiona
     """Scan a single host"""
     try:
         ip_str = str(ip)
+        logger.debug(f"[HOST-SCAN] Starting scan of {ip_str}")
         
         # First check if host is up
+        logger.debug(f"[HOST-SCAN] Checking if {ip_str} is up via ping")
         if not ping_host(ip_str, timeout=1.0):
+            logger.debug(f"[HOST-SCAN] Ping failed for {ip_str}, trying TCP fallback on port 80")
             # Try TCP scan on port 80 as fallback
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(0.5)
             result = sock.connect_ex((ip_str, 80))
             sock.close()
             if result != 0:
+                logger.debug(f"[HOST-SCAN] Host {ip_str} appears to be down (no ping, no TCP 80)")
                 return None
+            else:
+                logger.debug(f"[HOST-SCAN] Host {ip_str} responsive on TCP port 80")
         
         # Host is up, gather information
         device_info = {
@@ -144,19 +169,22 @@ def scan_single_host(ip: str, scan_id: str = None, scan_tracker=None) -> Optiona
         device_info['first_seen'] = time.strftime('%Y-%m-%d %H:%M:%S')
         device_info['last_seen'] = device_info['first_seen']
         
-        logger.info(f"Discovered device: {ip_str} ({hostname or 'Unknown'})")
+        logger.info(f"[HOST-SCAN] ✅ Discovered device: {ip_str} ({hostname or 'Unknown'})")
+        logger.info(f"[HOST-SCAN] Device type: {device_info['device_type']}, Open ports: {device_info['open_ports']}")
         
         # Emit device discovered event
         try:
             from flask_socketio import emit as socketio_emit
+            logger.debug(f"[HOST-SCAN] Emitting device_discovered event for {ip_str}")
             socketio_emit('device_discovered', device_info, broadcast=True, namespace='/')
-        except Exception:
-            pass
+            logger.debug(f"[HOST-SCAN] Device discovery event emitted")
+        except Exception as e:
+            logger.debug(f"[HOST-SCAN] Could not emit device discovery: {e}")
         
         return device_info
         
     except Exception as e:
-        logger.error(f"Error scanning host {ip}: {e}")
+        logger.error(f"[HOST-SCAN] ❌ Error scanning host {ip}: {e}", exc_info=True)
         return None
 
 def robust_network_scan(subnet: str, scan_id: str, scan_tracker=None) -> Tuple[Dict, Dict]:
@@ -168,6 +196,11 @@ def robust_network_scan(subnet: str, scan_id: str, scan_tracker=None) -> Tuple[D
     - TCP port scanning
     - Hostname resolution
     """
+    logger.info(f"[NETWORK-SCAN] ========== Starting Network Scan ==========")
+    logger.info(f"[NETWORK-SCAN] Scan ID: {scan_id}")
+    logger.info(f"[NETWORK-SCAN] Target subnet: {subnet}")
+    logger.info(f"[NETWORK-SCAN] Scan tracker available: {scan_tracker is not None}")
+    
     devices = {}
     summary = {
         'scan_successful': False,
@@ -181,12 +214,17 @@ def robust_network_scan(subnet: str, scan_id: str, scan_tracker=None) -> Tuple[D
     
     try:
         # Parse network
+        logger.info(f"[NETWORK-SCAN] Parsing network address: {subnet}")
         network = ipaddress.ip_network(subnet, strict=False)
         hosts = list(network.hosts())
         total_hosts = len(hosts)
         summary['total_hosts'] = total_hosts
         
-        logger.info(f"Starting robust scan of {subnet} ({total_hosts} hosts)")
+        logger.info(f"[NETWORK-SCAN] ✅ Network parsed successfully")
+        logger.info(f"[NETWORK-SCAN] Network: {network}")
+        logger.info(f"[NETWORK-SCAN] Total hosts to scan: {total_hosts}")
+        logger.info(f"[NETWORK-SCAN] IP range: {hosts[0] if hosts else 'empty'} - {hosts[-1] if hosts else 'empty'}")
+        
         emit_progress(scan_id, 5, f"Starting scan of {subnet} ({total_hosts} hosts)", scan_tracker)
         
         # Limit scan size for performance
@@ -202,12 +240,16 @@ def robust_network_scan(subnet: str, scan_id: str, scan_tracker=None) -> Tuple[D
         max_workers = min(50, total_hosts)  # Limit concurrent threads
         discovered_count = 0
         
+        logger.info(f"[NETWORK-SCAN] Starting concurrent scan with {max_workers} worker threads")
+        
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all scan tasks
+            logger.info(f"[NETWORK-SCAN] Submitting {len(hosts)} scan tasks to thread pool")
             future_to_ip = {
                 executor.submit(scan_single_host, ip, scan_id, scan_tracker): ip 
                 for ip in hosts
             }
+            logger.info(f"[NETWORK-SCAN] All tasks submitted, waiting for results...")
             
             # Process results as they complete
             completed = 0
@@ -233,10 +275,13 @@ def robust_network_scan(subnet: str, scan_id: str, scan_tracker=None) -> Tuple[D
                         summary['active_hosts'] += 1
                         
                         # Log discovery
-                        logger.info(f"Device discovered: {ip} ({result.get('hostname', 'Unknown')})")
+                        logger.info(f"[NETWORK-SCAN] ✅ Device #{discovered_count} discovered: {ip} ({result.get('hostname', 'Unknown')})")
+                        logger.debug(f"[NETWORK-SCAN] Device details: {result}")
+                    else:
+                        logger.debug(f"[NETWORK-SCAN] No response from {ip}")
                         
                 except Exception as e:
-                    logger.debug(f"Error scanning {ip}: {e}")
+                    logger.debug(f"[NETWORK-SCAN] Error scanning {ip}: {e}")
                     summary['errors'].append(f"Error scanning {ip}: {str(e)}")
         
         # Final summary
@@ -244,6 +289,13 @@ def robust_network_scan(subnet: str, scan_id: str, scan_tracker=None) -> Tuple[D
         summary['scan_duration'] = scan_duration
         summary['scan_successful'] = True
         summary['devices_found'] = len(devices)
+        
+        logger.info(f"[NETWORK-SCAN] ========== Scan Complete ==========")
+        logger.info(f"[NETWORK-SCAN] Duration: {scan_duration:.1f} seconds")
+        logger.info(f"[NETWORK-SCAN] Total hosts scanned: {total_hosts}")
+        logger.info(f"[NETWORK-SCAN] Active devices found: {len(devices)}")
+        logger.info(f"[NETWORK-SCAN] Success rate: {(len(devices)/total_hosts*100):.1f}%" if total_hosts > 0 else "N/A")
+        logger.info(f"[NETWORK-SCAN] Errors encountered: {len(summary['errors'])}")
         
         # Emit completion
         emit_progress(
@@ -253,15 +305,21 @@ def robust_network_scan(subnet: str, scan_id: str, scan_tracker=None) -> Tuple[D
             scan_tracker
         )
         
-        logger.info(f"Scan completed: {len(devices)} devices found in {scan_duration:.1f} seconds")
+        # Log discovered devices summary
+        if devices:
+            logger.info(f"[NETWORK-SCAN] Discovered devices:")
+            for ip, dev_info in devices.items():
+                logger.info(f"[NETWORK-SCAN]   - {ip}: {dev_info.get('hostname', 'Unknown')} ({dev_info.get('device_type', 'unknown')})")
         
         # Final progress
         emit_progress(scan_id, 100, "Scan completed successfully", scan_tracker)
         
     except Exception as e:
-        logger.error(f"Scan failed: {e}")
+        logger.error(f"[NETWORK-SCAN] ❌ SCAN FAILED: {e}", exc_info=True)
+        logger.error(f"[NETWORK-SCAN] Exception type: {type(e).__name__}")
         summary['scan_successful'] = False
         summary['error'] = str(e)
+        summary['scan_duration'] = time.time() - start_time
         emit_progress(scan_id, 100, f"Scan failed: {str(e)}", scan_tracker)
     
     return devices, summary
@@ -270,25 +328,39 @@ def scan_with_robust_progress(subnet: str, scan_id: str, scan_tracker=None) -> T
     """
     Main entry point for network scanning with progress tracking
     """
-    logger.info(f"Initiating network scan {scan_id} for subnet {subnet}")
+    logger.info(f"[MAIN-SCANNER] ============================================")
+    logger.info(f"[MAIN-SCANNER] NETWORK SCAN INITIATED")
+    logger.info(f"[MAIN-SCANNER] Scan ID: {scan_id}")
+    logger.info(f"[MAIN-SCANNER] Target Subnet: {subnet}")
+    logger.info(f"[MAIN-SCANNER] Tracker Available: {scan_tracker is not None}")
+    logger.info(f"[MAIN-SCANNER] ============================================")
     
     # Emit initial progress
     emit_progress(scan_id, 0, "Initializing network scan", scan_tracker)
     
     try:
+        logger.info(f"[MAIN-SCANNER] Calling robust_network_scan function")
         # Perform the scan
         devices, summary = robust_network_scan(subnet, scan_id, scan_tracker)
         
+        logger.info(f"[MAIN-SCANNER] Scan function returned successfully")
+        logger.info(f"[MAIN-SCANNER] Devices returned: {len(devices) if devices else 0}")
+        logger.info(f"[MAIN-SCANNER] Summary: {summary}")
+        
         # Ensure we always return valid data
         if devices is None:
+            logger.warning(f"[MAIN-SCANNER] Devices was None, returning empty dict")
             devices = {}
         if summary is None:
+            logger.warning(f"[MAIN-SCANNER] Summary was None, creating error summary")
             summary = {'scan_successful': False, 'error': 'Unknown error'}
         
+        logger.info(f"[MAIN-SCANNER] ✅ Scan completed, returning results")
         return devices, summary
         
     except Exception as e:
-        logger.error(f"Fatal error in robust scan: {e}")
+        logger.error(f"[MAIN-SCANNER] ❌ FATAL ERROR in scan: {e}", exc_info=True)
+        logger.error(f"[MAIN-SCANNER] Exception type: {type(e).__name__}")
         return {}, {
             'scan_successful': False,
             'error': str(e),
