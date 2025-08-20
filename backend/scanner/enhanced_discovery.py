@@ -370,18 +370,33 @@ class EnhancedNetworkDiscovery:
     
     async def _nmap_discovery(self, subnet: str) -> List[str]:
         """
-        Use Nmap for host discovery
+        Use Nmap for host discovery with timeout
         """
         hosts = []
+        logger.info(f"[NMAP] Starting Nmap discovery for {subnet}")
         try:
-            cmd = ['nmap', '-sn', '-T4', '--min-parallelism', '100', subnet]
+            # Add timeout and faster options for large networks
+            cmd = ['nmap', '-sn', '-T4', '--min-parallelism', '100', '--max-retries', '1', subnet]
+            logger.info(f"[NMAP] Running command: {' '.join(cmd)}")
+            
+            # Create subprocess with timeout
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
             
-            stdout, stderr = await process.communicate()
+            # Wait for completion with timeout (30 seconds for /24 network)
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(),
+                    timeout=30.0  # 30 second timeout
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"[NMAP] Nmap discovery timed out after 30 seconds for {subnet}")
+                process.kill()
+                await process.wait()
+                return hosts
             
             if process.returncode == 0:
                 output = stdout.decode()
@@ -390,10 +405,16 @@ class EnhancedNetworkDiscovery:
                         ip_match = re.search(r'\d+\.\d+\.\d+\.\d+', line)
                         if ip_match:
                             hosts.append(ip_match.group())
+                logger.info(f"[NMAP] Discovery found {len(hosts)} hosts")
+            else:
+                logger.warning(f"[NMAP] Nmap returned non-zero exit code: {process.returncode}")
+                if stderr:
+                    logger.warning(f"[NMAP] Stderr: {stderr.decode()}")
             
-            logger.debug(f"Nmap discovery found {len(hosts)} hosts")
+        except FileNotFoundError:
+            logger.error(f"[NMAP] Nmap not found - make sure it's installed")
         except Exception as e:
-            logger.error(f"Nmap discovery failed: {e}")
+            logger.error(f"[NMAP] Discovery failed: {e}")
         
         return hosts
     
@@ -847,9 +868,38 @@ async def discover_network_enhanced(subnet: str, deep_scan: bool = False, scan_i
     Returns:
         Tuple of (discovered_devices, summary)
     """
+    logger.info(f"[ENHANCED] Starting enhanced discovery for {subnet}")
     discovery = EnhancedNetworkDiscovery()
-    devices = await discovery.discover_network(subnet, deep_scan, scan_id)
+    
+    try:
+        # Set a reasonable timeout based on network size
+        network = ipaddress.ip_network(subnet, strict=False)
+        num_hosts = network.num_addresses - 2  # Exclude network and broadcast
+        
+        # Calculate timeout: 1 second per host for quick scan, 5 seconds for deep scan
+        # Maximum 5 minutes for any scan
+        timeout_seconds = min(300, num_hosts * (5 if deep_scan else 1))
+        logger.info(f"[ENHANCED] Scanning {num_hosts} hosts with {timeout_seconds}s timeout")
+        
+        # Run discovery with timeout
+        devices = await asyncio.wait_for(
+            discovery.discover_network(subnet, deep_scan, scan_id),
+            timeout=timeout_seconds
+        )
+        
+        logger.info(f"[ENHANCED] Discovery completed successfully: {len(devices)} devices found")
+        
+    except asyncio.TimeoutError:
+        logger.warning(f"[ENHANCED] Discovery timed out after {timeout_seconds} seconds")
+        # Return what we have so far
+        devices = discovery.discovered_devices
+        
+    except Exception as e:
+        logger.error(f"[ENHANCED] Discovery failed: {e}")
+        devices = {}
+    
     summary = discovery.get_discovery_summary()
+    summary['scan_successful'] = len(devices) > 0 or not isinstance(devices, dict)
     
     return devices, summary
 

@@ -109,7 +109,9 @@ class ScanProgressTracker:
     
     def start_scan(self, scan_id: str, total_targets: int = 0, scan_config: Dict = None) -> ScanProgress:
         """Start tracking a new scan"""
+        logger.info(f"[TRACKER] start_scan called for {scan_id}")
         with self._lock:
+            logger.info(f"[TRACKER] Creating ScanProgress object for {scan_id}")
             progress = ScanProgress(
                 scan_id=scan_id,
                 stage=ScanStage.INITIALIZING,
@@ -118,19 +120,25 @@ class ScanProgressTracker:
                 details=scan_config or {}
             )
             
+            logger.info(f"[TRACKER] Adding scan to active_scans: {scan_id}")
             self.active_scans[scan_id] = progress
             self.scan_logs[scan_id] = []
             
-            self.log_message(
-                scan_id, 
-                ScanStage.INITIALIZING,
-                ScanPriority.INFO,
-                f"Scan started with {total_targets} targets",
-                details={"config": scan_config}
-            )
-            
+            logger.info(f"[TRACKER] Calling _notify_progress_update for {scan_id}")
             self._notify_progress_update(scan_id)
-            return progress
+            logger.info(f"[TRACKER] start_scan completed for {scan_id}, now logging message")
+        
+        # Call log_message outside the lock to avoid deadlock
+        logger.info(f"[TRACKER] Logging initial message for {scan_id}")
+        self.log_message(
+            scan_id, 
+            ScanStage.INITIALIZING,
+            ScanPriority.INFO,
+            f"Scan started with {total_targets} targets",
+            details={"config": scan_config}
+        )
+        
+        return progress
     
     def update_stage(self, scan_id: str, stage: ScanStage, message: str = None):
         """Update the current scan stage"""
@@ -272,6 +280,28 @@ class ScanProgressTracker:
             "details": details
         })
     
+    def update_progress(self, scan_id: str, percentage: int, message: str, stage: str = None):
+        """Update scan progress (compatibility method)"""
+        with self._lock:
+            if scan_id not in self.active_scans:
+                return
+            
+            progress = self.active_scans[scan_id]
+            progress.percentage = float(percentage)
+            progress.current_step = message
+            progress.last_update = datetime.now()
+            
+            # Update stage if provided
+            if stage:
+                try:
+                    new_stage = ScanStage(stage)
+                    if progress.stage != new_stage:
+                        progress.stage = new_stage
+                except ValueError:
+                    pass  # Invalid stage value, ignore
+            
+            self._notify_progress_update(scan_id)
+    
     def log_error(self, scan_id: str, message: str, target: str = None, details: Dict = None):
         """Log an error message"""
         stage = self.active_scans.get(scan_id, ScanProgress(scan_id, ScanStage.INITIALIZING, "")).stage
@@ -411,20 +441,24 @@ class ScanProgressTracker:
     
     def _notify_progress_update(self, scan_id: str):
         """Notify frontend of progress update via WebSocket"""
+        logger.debug(f"[TRACKER] _notify_progress_update called for {scan_id}, callback={self.websocket_callback is not None}")
         if self.websocket_callback:
             progress = self.active_scans.get(scan_id)
             if progress:
                 try:
+                    logger.debug(f"[TRACKER] Converting progress to dict for {scan_id}")
                     # Convert to dict for JSON serialization
                     progress_dict = asdict(progress)
                     progress_dict['start_time'] = progress.start_time.isoformat()
                     progress_dict['last_update'] = progress.last_update.isoformat()
                     progress_dict['stage'] = progress.stage.value
                     
+                    logger.debug(f"[TRACKER] Calling websocket_callback for {scan_id}")
                     self.websocket_callback('scan_progress', {
                         'scan_id': scan_id,
                         'progress': progress_dict
                     })
+                    logger.debug(f"[TRACKER] websocket_callback completed for {scan_id}")
                 except Exception as e:
                     logger.error(f"Failed to send progress update: {e}")
 
