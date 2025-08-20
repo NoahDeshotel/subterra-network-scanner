@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NetScope Pro - Advanced Network Intelligence</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="/src/styles.css">
+</head>
+<body>
+    <!-- Matrix Background Canvas -->
+    <canvas id="matrix-bg"></canvas>
+    
+    <!-- Main App Container -->
+    <div id="app" class="app-container">
+        
+        <!-- Floating Sidebar Navigation -->
+        <nav class="glasmorphic-sidebar">
+            <div class="nav-brand">
+                <div class="brand-icon">
+                    <i class="fas fa-network-wired"></i>
+                </div>
+                <span class="brand-text">NetScope</span>
+            </div>
+            
+            <div class="nav-menu">
+                <button class="nav-item active" data-view="overview">
+                    <i class="fas fa-chart-line"></i>
+                    <span>Overview</span>
+                </button>
+                <button class="nav-item" data-view="discovery">
+                    <i class="fas fa-radar"></i>
+                    <span>Discovery</span>
+                </button>
+                <button class="nav-item" data-view="topology">
+                    <i class="fas fa-project-diagram"></i>
+                    <span>Topology</span>
+                </button>
+                <button class="nav-item" data-view="devices">
+                    <i class="fas fa-server"></i>
+                    <span>Devices</span>
+                </button>
+                <button class="nav-item" data-view="vulnerabilities">
+                    <i class="fas fa-shield-alt"></i>
+                    <span>Security</span>
+                </button>
+                <button class="nav-item" data-view="analytics">
+                    <i class="fas fa-chart-pie"></i>
+                    <span>Analytics</span>
+                </button>
+                <button class="nav-item" data-view="settings">
+                    <i class="fas fa-cog"></i>
+                    <span>Settings</span>
+                </button>
+            </div>
+            
+            <div class="nav-actions">
+                <button class="action-btn scan-btn" id="start-scan">
+                    <i class="fas fa-play"></i>
+                </button>
+                <button class="action-btn settings-btn">
+                    <i class="fas fa-cog"></i>
+                </button>
+            </div>
+        </nav>
+        
+        <!-- Main Content Area -->
+        <main class="main-content">
+            
+            <!-- Overview View -->
+            <div id="overview-view" class="view active">
+                <!-- Top Status Bar -->
+                <div class="status-bar">
+                    <div class="status-indicator online">
+                        <div class="pulse-dot"></div>
+                        <span>Network Online</span>
+                    </div>
+                    <div class="scan-status" id="scan-status">
+                        <span>Last scan: <span id="last-scan-time">--</span></span>
+                    </div>
+                </div>
+                
+                <!-- KPI Dashboard -->
+                <div class="kpi-grid">
+                    <div class="kpi-card devices-card">
+                        <div class="kpi-icon">
+                            <i class="fas fa-server"></i>
+                        </div>
+                        <div class="kpi-content">
+                            <div class="kpi-value" id="total-devices">--</div>
+                            <div class="kpi-label">Total Devices</div>
+                            <div class="kpi-change positive">
+                                <i class="fas fa-arrow-up"></i>
+                                <span id="devices-change">+0</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="kpi-card security-card">
+                        <div class="kpi-icon">
+                            <i class="fas fa-shield-alt"></i>
+                        </div>
+                        <div class="kpi-content">
+                            <div class="kpi-value" id="security-score">--</div>
+                            <div class="kpi-label">Security Score</div>
+                            <div class="kpi-change" id="security-trend">
+                                <i class="fas fa-minus"></i>
+                                <span>Stable</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="kpi-card vulnerabilities-card">
+                        <div class="kpi-icon">
+                            <i class="fas fa-exclamation-triangle"></i>
+                        </div>
+                        <div class="kpi-content">
+                            <div class="kpi-value" id="critical-vulns">--</div>
+                            <div class="kpi-label">Critical Issues</div>
+                            <div class="kpi-change negative">
+                                <i class="fas fa-arrow-down"></i>
+                                <span id="vulns-change">-0</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="kpi-card activity-card">
+                        <div class="kpi-icon">
+                            <i class="fas fa-activity"></i>
+                        </div>
+                        <div class="kpi-content">
+                            <div class="kpi-value" id="network-activity">--</div>
+                            <div class="kpi-label">Network Activity</div>
+                            <div class="kpi-change">
+                                <i class="fas fa-pulse"></i>
+                                <span id="activity-status">Normal</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Main Dashboard Grid -->
+                <div class="dashboard-grid">
+                    <!-- Real-time Network Map -->
+                    <div class="dashboard-card map-card">
+                        <div class="card-header">
+                            <h3>Network Topology</h3>
+                            <div class="card-actions">
+                                <button class="icon-btn"><i class="fas fa-expand"></i></button>
+                                <button class="icon-btn"><i class="fas fa-download"></i></button>
+                            </div>
+                        </div>
+                        <div class="card-content">
+                            <div id="network-topology" class="topology-container">
+                                <div class="topology-placeholder">
+                                    <i class="fas fa-project-diagram"></i>
+                                    <p>Loading network topology...</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Device Type Distribution -->
+                    <div class="dashboard-card chart-card">
+                        <div class="card-header">
+                            <h3>Device Distribution</h3>
+                            <div class="chart-legend" id="device-legend"></div>
+                        </div>
+                        <div class="card-content">
+                            <canvas id="device-distribution-chart"></canvas>
+                        </div>
+                    </div>
+                    
+                    <!-- Security Timeline -->
+                    <div class="dashboard-card timeline-card">
+                        <div class="card-header">
+                            <h3>Security Events</h3>
+                            <div class="timeline-filters">
+                                <button class="filter-btn active" data-period="24h">24h</button>
+                                <button class="filter-btn" data-period="7d">7d</button>
+                                <button class="filter-btn" data-period="30d">30d</button>
+                            </div>
+                        </div>
+                        <div class="card-content">
+                            <div id="security-timeline" class="timeline-container">
+                                <!-- Timeline events will be populated here -->
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Live Activity Feed -->
+                    <div class="dashboard-card activity-feed-card">
+                        <div class="card-header">
+                            <h3>Live Activity</h3>
+                            <div class="activity-status-indicator">
+                                <div class="pulse-indicator"></div>
+                                <span>Real-time</span>
+                            </div>
+                        </div>
+                        <div class="card-content">
+                            <div id="activity-feed" class="activity-feed">
+                                <!-- Activity items will be populated here -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Discovery View -->
+            <div id="discovery-view" class="view">
+                <div class="view-header">
+                    <h2>Network Discovery</h2>
+                    <div class="scan-controls">
+                        <div class="scan-config">
+                            <input type="text" id="subnet-input" placeholder="10.0.0.0/24" class="glass-input">
+                            <select id="scan-type" class="glass-select">
+                                <option value="quick">Quick Scan</option>
+                                <option value="comprehensive">Comprehensive</option>
+                                <option value="vulnerability">Vulnerability Scan</option>
+                            </select>
+                        </div>
+                        <button class="btn-primary scan-start-btn" id="discovery-scan-btn">
+                            <i class="fas fa-play"></i>
+                            Start Discovery
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Scan Progress Panel -->
+                <div class="scan-progress-panel" id="scan-progress-panel">
+                    <div class="progress-header">
+                        <h3>Scanning Progress</h3>
+                        <div class="scan-controls-mini">
+                            <button class="btn-secondary" id="pause-scan">
+                                <i class="fas fa-pause"></i>
+                            </button>
+                            <button class="btn-danger" id="stop-scan">
+                                <i class="fas fa-stop"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="progress-content">
+                        <div class="progress-bar-container">
+                            <div class="progress-bar" id="scan-progress-bar">
+                                <div class="progress-fill" style="width: 0%"></div>
+                            </div>
+                            <span class="progress-text" id="scan-progress-text">0%</span>
+                        </div>
+                        <div class="scan-stages" id="scan-stages">
+                            <!-- Scan stages will be populated here -->
+                        </div>
+                        <div class="scan-log" id="scan-log">
+                            <!-- Real-time log entries -->
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Discovery Results -->
+                <div class="discovery-results">
+                    <div class="results-summary">
+                        <div class="summary-stat">
+                            <span class="stat-value" id="hosts-found">0</span>
+                            <span class="stat-label">Hosts Found</span>
+                        </div>
+                        <div class="summary-stat">
+                            <span class="stat-value" id="new-devices">0</span>
+                            <span class="stat-label">New Devices</span>
+                        </div>
+                        <div class="summary-stat">
+                            <span class="stat-value" id="open-ports">0</span>
+                            <span class="stat-label">Open Ports</span>
+                        </div>
+                        <div class="summary-stat">
+                            <span class="stat-value" id="vulnerabilities-found">0</span>
+                            <span class="stat-label">Vulnerabilities</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Other views will be added here -->
+            <div id="topology-view" class="view">
+                <div class="view-header">
+                    <h2>Network Topology</h2>
+                    <div class="topology-controls">
+                        <button class="btn-secondary" id="refresh-topology">
+                            <i class="fas fa-sync"></i>
+                            Refresh
+                        </button>
+                        <button class="btn-primary" id="topology-scan">
+                            <i class="fas fa-radar"></i>
+                            Discover Topology
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Topology Map -->
+                <div class="topology-container">
+                    <div id="network-topology-full" class="topology-map">
+                        <div class="topology-placeholder">
+                            <i class="fas fa-project-diagram"></i>
+                            <p>Loading network topology...</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Topology Stats -->
+                <div class="topology-stats">
+                    <div class="stat-card">
+                        <h4>Total Devices</h4>
+                        <span id="topology-devices">--</span>
+                    </div>
+                    <div class="stat-card">
+                        <h4>Network Segments</h4>
+                        <span id="topology-segments">--</span>
+                    </div>
+                    <div class="stat-card">
+                        <h4>Connections</h4>
+                        <span id="topology-connections">--</span>
+                    </div>
+                    <div class="stat-card">
+                        <h4>Network Health</h4>
+                        <span id="topology-health">--</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div id="devices-view" class="view">
+                <div class="view-header">
+                    <h2>Device Inventory</h2>
+                </div>
+                <!-- Device inventory content -->
+            </div>
+            
+            <div id="vulnerabilities-view" class="view">
+                <div class="view-header">
+                    <h2>Security Dashboard</h2>
+                </div>
+                <!-- Security content -->
+            </div>
+            
+            <div id="analytics-view" class="view">
+                <div class="view-header">
+                    <h2>Network Analytics</h2>
+                </div>
+                <!-- Analytics content -->
+            </div>
+            
+            <!-- Settings View -->
+            <div id="settings-view" class="view">
+                <div class="view-header">
+                    <h2>System Settings</h2>
+                </div>
+                
+                <div class="settings-container">
+                    <!-- Database Management Section -->
+                    <div class="settings-section">
+                        <h3>Database Management</h3>
+                        <div class="settings-card">
+                            <div class="setting-item">
+                                <div class="setting-info">
+                                    <h4>Database Status</h4>
+                                    <p>Current database contains device and scan data</p>
+                                </div>
+                                <div class="setting-action">
+                                    <span class="status-badge connected">Connected</span>
+                                </div>
+                            </div>
+                            
+                            <div class="setting-item">
+                                <div class="setting-info">
+                                    <h4>Clear All Data</h4>
+                                    <p>Permanently delete all devices, scans, and configuration data</p>
+                                </div>
+                                <div class="setting-action">
+                                    <button class="btn-danger" id="delete-database-btn">
+                                        <i class="fas fa-trash"></i>
+                                        Delete Database
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Scan Configuration Section -->
+                    <div class="settings-section">
+                        <h3>Scan Configuration</h3>
+                        <div class="settings-card">
+                            <div class="setting-item">
+                                <div class="setting-info">
+                                    <h4>Default Subnet</h4>
+                                    <p>Network range to scan by default</p>
+                                </div>
+                                <div class="setting-action">
+                                    <input type="text" id="default-subnet" value="10.0.0.0/24" class="glass-input">
+                                </div>
+                            </div>
+                            
+                            <div class="setting-item">
+                                <div class="setting-info">
+                                    <h4>Scan Timeout</h4>
+                                    <p>Maximum time for scan operations (seconds)</p>
+                                </div>
+                                <div class="setting-action">
+                                    <input type="number" id="scan-timeout" value="300" min="60" max="3600" class="glass-input">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- System Information Section -->
+                    <div class="settings-section">
+                        <h3>System Information</h3>
+                        <div class="settings-card">
+                            <div class="setting-item">
+                                <div class="setting-info">
+                                    <h4>Version</h4>
+                                    <p>NetScope Pro version information</p>
+                                </div>
+                                <div class="setting-action">
+                                    <span class="version-info">3.0.0</span>
+                                </div>
+                            </div>
+                            
+                            <div class="setting-item">
+                                <div class="setting-info">
+                                    <h4>Backend Status</h4>
+                                    <p>API server connection status</p>
+                                </div>
+                                <div class="setting-action">
+                                    <span class="status-badge" id="backend-status">Checking...</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+        
+        <!-- Floating Action Button -->
+        <div class="fab-container">
+            <button class="fab" id="emergency-scan">
+                <i class="fas fa-bolt"></i>
+            </button>
+        </div>
+        
+        <!-- Toast Notifications -->
+        <div id="toast-container" class="toast-container">
+            <!-- Toast notifications will appear here -->
+        </div>
+        
+        <!-- Confirmation Modal -->
+        <div id="confirmation-modal" class="modal-overlay">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 id="modal-title">Confirm Action</h3>
+                    <p id="modal-message">Are you sure you want to proceed?</p>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn-secondary" id="modal-cancel">Cancel</button>
+                    <button class="btn-danger" id="modal-confirm">Confirm</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Scripts -->
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script type="module" src="/src/matrix-bg.js"></script>
+    <script type="module" src="/src/app.js"></script>
+</body>
+</html>

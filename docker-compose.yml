@@ -1,0 +1,52 @@
+services:
+  backend:
+    build: ./backend
+    container_name: network-scanner-backend
+    ports:
+      - "8080:8080"
+      - "8765:8765"
+    volumes:
+      - ./backend:/app
+      - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - FLASK_ENV=production
+      - DATABASE_PATH=/app/data/enhanced_inventory.db
+      - SCAN_RESULTS_PATH=/app/data/scans
+      - SECRET_KEY=${SECRET_KEY}
+      - SCAN_INTERVAL=${SCAN_INTERVAL:-3600}
+    privileged: true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    build: 
+      context: ./frontend
+      dockerfile: Dockerfile.simple
+    container_name: network-scanner-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    container_name: network-scanner-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+volumes:
+  redis-data:

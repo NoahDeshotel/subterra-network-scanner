@@ -1,0 +1,17 @@
+FROM nginx:alpine
+
+# Copy static files directly
+COPY index.html /usr/share/nginx/html/
+COPY src/ /usr/share/nginx/html/src/
+
+# Copy nginx configuration
+COPY nginx.simple.conf /etc/nginx/nginx.conf
+
+# Create health check endpoint
+RUN echo "OK" > /usr/share/nginx/html/health
+
+# Expose port 80
+EXPOSE 80
+
+# Start nginx
+CMD ["nginx", "-g", "daemon off;"]
