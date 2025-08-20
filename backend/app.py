@@ -874,6 +874,7 @@ if __name__ == '__main__':
     logger.info("  🌐 GET  /api/topology - Network topology")
     logger.info("  🔍 POST /api/scan/start - Start network scan")
     logger.info("  📄 POST /api/reports/generate - Generate reports")
+    logger.info("  🗑️  POST /api/database/clear - Clear database")
     
     # Start the server
     logger.info(f"🌐 Server starting on http://0.0.0.0:8080")
