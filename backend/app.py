@@ -364,11 +364,79 @@ def start_scan():
         # Auto-detect subnet if needed
         if scan_config['subnet'] == 'auto':
             import socket
-            hostname = socket.gethostname()
-            local_ip = socket.gethostbyname(hostname)
-            # Convert to /24 subnet
-            subnet_parts = local_ip.split('.')
-            scan_config['subnet'] = f"{'.'.join(subnet_parts[:3])}.0/24"
+            import netifaces
+            import platform
+            
+            # Get the host's actual network interface (not Docker's)
+            detected_subnet = None
+            
+            try:
+                # Method 1: Try to get the default gateway interface
+                gateways = netifaces.gateways()
+                if 'default' in gateways and netifaces.AF_INET in gateways['default']:
+                    default_interface = gateways['default'][netifaces.AF_INET][1]
+                    addrs = netifaces.ifaddresses(default_interface)
+                    if netifaces.AF_INET in addrs:
+                        ip_info = addrs[netifaces.AF_INET][0]
+                        ip_addr = ip_info['addr']
+                        netmask = ip_info.get('netmask', '255.255.255.0')
+                        
+                        # Calculate network address
+                        ip_obj = ipaddress.ip_interface(f"{ip_addr}/{netmask}")
+                        detected_subnet = str(ip_obj.network)
+                        logger.info(f"Detected host network from default interface: {detected_subnet}")
+            except Exception as e:
+                logger.warning(f"Could not detect from default interface: {e}")
+            
+            # Method 2: Fallback to examining all interfaces
+            if not detected_subnet:
+                try:
+                    for interface in netifaces.interfaces():
+                        # Skip loopback and docker interfaces
+                        if interface.startswith(('lo', 'docker', 'br-')):
+                            continue
+                        
+                        addrs = netifaces.ifaddresses(interface)
+                        if netifaces.AF_INET in addrs:
+                            for addr_info in addrs[netifaces.AF_INET]:
+                                ip = addr_info['addr']
+                                # Skip localhost and docker IPs
+                                if ip.startswith(('127.', '172.17.', '172.18.', '172.19.')):
+                                    continue
+                                
+                                netmask = addr_info.get('netmask', '255.255.255.0')
+                                ip_obj = ipaddress.ip_interface(f"{ip}/{netmask}")
+                                detected_subnet = str(ip_obj.network)
+                                logger.info(f"Detected host network from interface {interface}: {detected_subnet}")
+                                break
+                        
+                        if detected_subnet:
+                            break
+                except Exception as e:
+                    logger.warning(f"Could not detect from interfaces: {e}")
+            
+            # Method 3: Use environment variable if set (for Docker)
+            if not detected_subnet and os.getenv('HOST_SUBNET'):
+                detected_subnet = os.getenv('HOST_SUBNET')
+                logger.info(f"Using HOST_SUBNET environment variable: {detected_subnet}")
+            
+            # Method 4: Final fallback
+            if not detected_subnet:
+                hostname = socket.gethostname()
+                local_ip = socket.gethostbyname(hostname)
+                # Skip if it's a Docker IP
+                if local_ip.startswith(('172.17.', '172.18.', '172.19.')):
+                    # Try to use a common home network subnet
+                    detected_subnet = '192.168.1.0/24'
+                    logger.warning(f"Detected Docker IP {local_ip}, using default home subnet: {detected_subnet}")
+                else:
+                    # Convert to /24 subnet
+                    subnet_parts = local_ip.split('.')
+                    detected_subnet = f"{'.'.join(subnet_parts[:3])}.0/24"
+                    logger.info(f"Using fallback subnet detection: {detected_subnet}")
+            
+            scan_config['subnet'] = detected_subnet
+            logger.info(f"Final subnet for scanning: {scan_config['subnet']}")
         
         # Start scan in background thread
         def run_scan():

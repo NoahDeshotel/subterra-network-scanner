@@ -24,6 +24,9 @@ class SimpleNetworkScanner:
     def __init__(self, progress_callback=None):
         self.progress_callback = progress_callback
         self.discovered_devices = {}
+        self.scan_id = None
+        self.progress_tracker = None
+        self.socketio = None
         
     def scan_network(self, subnet: str, scan_id: str = None) -> Dict[str, Dict]:
         """
@@ -65,6 +68,19 @@ class SimpleNetworkScanner:
                 
                 device_info = self._get_host_details(host_ip)
                 self.discovered_devices[host_ip] = device_info
+                
+                # Send device discovered notification via WebSocket
+                if self.socketio:
+                    try:
+                        self.socketio.emit('device_discovered', {
+                            'ip': host_ip,
+                            'hostname': device_info.get('hostname', 'Unknown'),
+                            'mac': device_info.get('mac_address'),
+                            'device_type': device_info.get('device_type', 'unknown'),
+                            'scan_id': self.scan_id
+                        })
+                    except Exception as e:
+                        logger.debug(f"Could not emit device discovery: {e}")
                 
                 logger.debug(f"Processed {host_ip}: {device_info.get('hostname', 'Unknown')}")
             
@@ -189,18 +205,70 @@ def scan_with_progress(subnet: str, scan_id: str, progress_tracker):
     """
     Run a simple scan with progress tracking
     """
-    def progress_callback(scan_id: str, message: str):
+    from scanner.scan_progress_tracker import ScanStage, ScanPriority
+    import socketio
+    
+    # Try to get socketio instance for device notifications
+    sio = None
+    try:
+        from app import socketio as app_socketio
+        sio = app_socketio
+    except:
+        pass
+    
+    def progress_callback(scan_id: str, message: str, percentage: float = None):
         if progress_tracker:
-            progress_tracker.log_info(scan_id, message)
+            # Update stage based on message content
+            if "Ping sweep" in message:
+                progress_tracker.update_stage(scan_id, ScanStage.HOST_DISCOVERY, message)
+            elif "Gathering details" in message:
+                progress_tracker.update_stage(scan_id, ScanStage.SERVICE_DETECTION, message)
+            elif "Processing host" in message:
+                progress_tracker.update_step(scan_id, message)
+                # Extract progress from message like "Processing host 10/50"
+                import re
+                match = re.search(r'(\d+)/(\d+)', message)
+                if match:
+                    current = int(match.group(1))
+                    total = int(match.group(2))
+                    progress_tracker.update_target_progress(scan_id, current)
+            else:
+                progress_tracker.log_message(scan_id, ScanStage.HOST_DISCOVERY, 
+                                            ScanPriority.INFO, message)
         logger.info(f"[{scan_id}] {message}")
     
-    scanner = SimpleNetworkScanner(progress_callback)
+    scanner = SimpleNetworkScanner()
+    scanner.progress_callback = progress_callback
+    scanner.scan_id = scan_id
+    scanner.progress_tracker = progress_tracker
+    scanner.socketio = sio
     
     try:
+        # Initialize scan tracking
+        network = ipaddress.ip_network(subnet, strict=False)
+        total_hosts = len(list(network.hosts()))
+        
+        if progress_tracker:
+            progress_tracker.start_scan(scan_id, total_hosts, {'subnet': subnet})
+            progress_tracker.update_stage(scan_id, ScanStage.INITIALIZING, 
+                                        f"Initializing scan for {subnet}")
+        
         progress_callback(scan_id, f"Starting network scan for {subnet}")
         devices = scanner.scan_network(subnet, scan_id)
+        
+        if progress_tracker:
+            progress_tracker.update_stage(scan_id, ScanStage.FINALIZING, 
+                                        "Processing scan results")
+        
         progress_callback(scan_id, f"Scan completed successfully: {len(devices)} devices found")
+        
+        if progress_tracker:
+            progress_tracker.complete_scan(scan_id, True, 
+                                         f"Scan completed: {len(devices)} devices found")
+        
         return devices, {'total_devices': len(devices), 'scan_successful': True}
     except Exception as e:
         progress_callback(scan_id, f"Scan failed: {str(e)}")
+        if progress_tracker:
+            progress_tracker.complete_scan(scan_id, False, f"Scan failed: {str(e)}")
         return {}, {'error': str(e), 'scan_successful': False}

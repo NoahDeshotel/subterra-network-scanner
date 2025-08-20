@@ -36,13 +36,17 @@ class NetScopeApp {
     }
     
     setupWebSocket() {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const host = window.location.hostname;
-        const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
+        // Connect to the backend WebSocket server
+        const backendUrl = window.location.hostname === 'localhost' 
+            ? 'http://localhost:8080'
+            : `${window.location.protocol}//${window.location.hostname}:8080`;
         
-        this.socket = io({
+        this.socket = io(backendUrl, {
             path: '/socket.io/',
-            transports: ['websocket', 'polling']
+            transports: ['websocket', 'polling'],
+            reconnection: true,
+            reconnectionDelay: 1000,
+            reconnectionAttempts: 10
         });
         
         this.socket.on('connect', () => {
@@ -56,14 +60,23 @@ class NetScopeApp {
         });
         
         this.socket.on('scan_progress', (data) => {
+            console.log('📊 Scan progress update:', data);
             this.updateScanProgress(data);
         });
         
+        this.socket.on('scan_started', (data) => {
+            console.log('🚀 Scan started:', data);
+            this.showScanProgress();
+            this.showToast(`Scan started for ${data.subnet || data.config?.subnet}`, 'success');
+        });
+        
         this.socket.on('device_discovered', (device) => {
+            console.log('🖥️ Device discovered:', device);
             this.handleDeviceDiscovered(device);
         });
         
-        this.socket.on('scan_complete', (results) => {
+        this.socket.on('scan_completed', (results) => {
+            console.log('✅ Scan completed:', results);
             this.handleScanComplete(results);
         });
         
@@ -230,6 +243,23 @@ class NetScopeApp {
                 vulnerabilities: devices.reduce((sum, d) => sum + (d.vulnerabilities || 0), 0)
             });
             
+            // Update total devices KPI
+            const totalDevicesElement = document.getElementById('total-devices');
+            if (totalDevicesElement) {
+                this.animateValue(totalDevicesElement, 
+                    parseInt(totalDevicesElement.textContent) || 0, 
+                    devices.length);
+            }
+            
+            // Update device list if on appropriate view
+            if (this.currentView === 'discovery' || this.currentView === 'inventory') {
+                this.renderDeviceList(devices);
+            }
+            
+            // Update device type distribution
+            const deviceTypes = this.groupDevicesByType(devices);
+            this.updateDeviceDistributionChart(deviceTypes);
+            
         } catch (error) {
             console.error('❌ Error loading device data:', error);
         }
@@ -321,9 +351,10 @@ class NetScopeApp {
         
         try {
             const response = await this.apiCall('/api/scan/start', 'POST', {
-                subnet: '10.0.0.0/24',
+                subnet: 'auto',  // Let backend auto-detect the correct subnet
                 scan_type: 'quick',
-                aggressive: false
+                aggressive: false,
+                scanner_type: 'auto'
             });
             
             if (response.scan_id) {
@@ -343,7 +374,7 @@ class NetScopeApp {
             return;
         }
         
-        const subnet = document.getElementById('subnet-input')?.value || '10.0.0.0/24';
+        const subnet = document.getElementById('subnet-input')?.value || 'auto';
         const scanType = document.getElementById('scan-type')?.value || 'comprehensive';
         
         try {
@@ -373,7 +404,7 @@ class NetScopeApp {
         
         try {
             const response = await this.apiCall('/api/scan/start', 'POST', {
-                subnet: '10.0.0.0/16',
+                subnet: 'auto',
                 scan_type: 'emergency',
                 aggressive: true,
                 vulnerability_scan: true,
@@ -402,16 +433,27 @@ class NetScopeApp {
     updateScanProgress(data) {
         if (!data) return;
         
+        // Extract progress data from the nested structure
+        const progressData = data.progress || data;
+        const percentage = progressData.percentage || progressData.progress || 0;
+        
         // Update progress bar
         const progressFill = document.querySelector('.progress-fill');
         const progressText = document.getElementById('scan-progress-text');
+        const progressContainer = document.querySelector('.progress-bar');
         
-        if (progressFill && data.progress !== undefined) {
-            progressFill.style.width = `${data.progress}%`;
+        if (progressFill) {
+            progressFill.style.width = `${percentage}%`;
+            progressFill.style.transition = 'width 0.3s ease';
         }
         
-        if (progressText && data.progress !== undefined) {
-            progressText.textContent = `${Math.round(data.progress)}%`;
+        if (progressText) {
+            progressText.textContent = `${Math.round(percentage)}%`;
+        }
+        
+        // Make sure progress bar is visible
+        if (progressContainer) {
+            progressContainer.style.display = 'block';
         }
         
         // Update scan stages
@@ -474,15 +516,31 @@ class NetScopeApp {
         // Update progress to 100%
         this.updateScanProgress({ progress: 100 });
         
+        // Hide progress panel after a delay
+        setTimeout(() => {
+            const progressPanel = document.getElementById('scan-progress-panel');
+            if (progressPanel) {
+                progressPanel.style.display = 'none';
+            }
+        }, 3000);
+        
         // Show completion message
-        this.showToast('Scan completed successfully!', 'success');
+        const message = results.success 
+            ? `Scan completed! Found ${results.devices_found || 0} devices.`
+            : `Scan failed: ${results.error || 'Unknown error'}`;
+        this.showToast(message, results.success ? 'success' : 'error');
         
         // Refresh data
         this.loadInitialData();
         
-        // Update discovery results
-        if (results) {
-            this.updateDiscoveryResults(results);
+        // Update discovery results if available
+        if (results && results.success) {
+            this.updateDiscoveryResults({
+                hostsFound: results.devices_found || 0,
+                newDevices: results.new_devices || results.devices_found || 0,
+                openPorts: results.summary?.open_ports || 0,
+                vulnerabilities: results.summary?.vulnerabilities || 0
+            });
         }
     }
     
@@ -504,7 +562,9 @@ class NetScopeApp {
     
     handleDeviceDiscovered(device) {
         // Add visual indicator for new device
-        this.showToast(`New device discovered: ${device.ip}`, 'info');
+        const deviceName = device.hostname || device.ip;
+        const deviceType = device.device_type || 'Unknown';
+        this.showToast(`New device: ${deviceName} (${deviceType})`, 'info');
         
         // Update real-time counters
         const hostsFoundElement = document.getElementById('hosts-found');
@@ -512,6 +572,28 @@ class NetScopeApp {
             const current = parseInt(hostsFoundElement.textContent) || 0;
             this.animateValue(hostsFoundElement, current, current + 1);
         }
+        
+        // Update new devices counter
+        const newDevicesElement = document.getElementById('new-devices');
+        if (newDevicesElement) {
+            const current = parseInt(newDevicesElement.textContent) || 0;
+            this.animateValue(newDevicesElement, current, current + 1);
+        }
+        
+        // Update total devices counter
+        const totalDevicesElement = document.getElementById('total-devices');
+        if (totalDevicesElement) {
+            const current = parseInt(totalDevicesElement.textContent) || 0;
+            this.animateValue(totalDevicesElement, current, current + 1);
+        }
+        
+        // Add to activity feed
+        this.addActivityFeedItem({
+            type: 'device',
+            message: `Discovered ${deviceName} at ${device.ip}`,
+            timestamp: new Date().toISOString(),
+            severity: 'info'
+        });
     }
     
     handleNetworkAlert(alert) {
@@ -1308,6 +1390,90 @@ class NetScopeApp {
             console.error('❌ Error deleting database:', error);
             this.showToast('Failed to clear database', 'error');
         }
+    }
+    
+    groupDevicesByType(devices) {
+        const types = {};
+        devices.forEach(device => {
+            const type = device.device_type || 'Unknown';
+            types[type] = (types[type] || 0) + 1;
+        });
+        return types;
+    }
+    
+    getDeviceIcon(deviceType) {
+        const icons = {
+            'router': 'wifi',
+            'switch': 'network-wired',
+            'server': 'server',
+            'workstation': 'desktop',
+            'laptop': 'laptop',
+            'mobile': 'mobile-alt',
+            'printer': 'print',
+            'iot': 'microchip',
+            'unknown': 'question-circle'
+        };
+        return icons[deviceType?.toLowerCase()] || 'question-circle';
+    }
+    
+    animateValue(element, start, end, duration = 1000) {
+        if (!element) return;
+        
+        const startTime = performance.now();
+        const diff = end - start;
+        
+        function update() {
+            const elapsed = performance.now() - startTime;
+            const progress = Math.min(elapsed / duration, 1);
+            const current = Math.floor(start + diff * progress);
+            
+            element.textContent = current;
+            
+            if (progress < 1) {
+                requestAnimationFrame(update);
+            }
+        }
+        
+        requestAnimationFrame(update);
+    }
+    
+    renderDeviceList(devices) {
+        const container = document.getElementById('device-list');
+        if (!container) return;
+        
+        if (!devices || devices.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-network-wired"></i>
+                    <p>No devices discovered yet</p>
+                    <button class="btn-primary" onclick="window.netScope.startQuickScan()">
+                        <i class="fas fa-radar"></i>
+                        Start Discovery
+                    </button>
+                </div>
+            `;
+            return;
+        }
+        
+        container.innerHTML = devices.map(device => `
+            <div class="device-item" data-device-ip="${device.ip}">
+                <div class="device-icon">
+                    <i class="fas fa-${this.getDeviceIcon(device.device_type)}"></i>
+                </div>
+                <div class="device-details">
+                    <h4 class="device-name">${device.hostname || device.ip}</h4>
+                    <p class="device-info">
+                        <span class="device-ip">${device.ip}</span>
+                        <span class="device-type">${device.device_type || 'Unknown'}</span>
+                        ${device.mac_address ? `<span class="device-mac">${device.mac_address}</span>` : ''}
+                    </p>
+                </div>
+                <div class="device-status">
+                    <span class="status-indicator ${device.is_active ? 'active' : 'inactive'}"></span>
+                    <span>${device.is_active ? 'Online' : 'Offline'}</span>
+                </div>
+            </div>
+        `).join('');
     }
 }
 
