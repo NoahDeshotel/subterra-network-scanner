@@ -391,7 +391,8 @@ def start_scan():
             'vulnerability_scan': data.get('vulnerability_scan', False),  # Disable by default for faster scans
             'snmp_communities': data.get('snmp_communities', ['public']),
             'topology_discovery': data.get('topology_discovery', False),  # Disable by default
-            'scanner_type': data.get('scanner_type', 'simple')  # Use simple scanner by default
+            'scanner_type': data.get('scanner_type', 'simple'),  # Use simple scanner by default
+            'scan_mode': data.get('scan_mode', 'smart')  # Scan mode for large networks: smart, thorough, or full
         }
         
         logger.info(f"Starting scan {scan_id} with config: {scan_config}")
@@ -586,7 +587,9 @@ def start_scan():
                         devices, summary = scan_with_robust_progress(
                             scan_config['subnet'], 
                             scan_id,
-                            scan_tracker
+                            scan_tracker,
+                            use_advanced=True,
+                            scan_mode=scan_config.get('scan_mode', 'smart')
                         )
                     except Exception as e:
                         logger.error(f"[SCAN-THREAD] Enhanced scan failed: {e}", exc_info=True)
@@ -607,7 +610,9 @@ def start_scan():
                     devices, summary = scan_with_robust_progress(
                         scan_config['subnet'], 
                         scan_id,
-                        scan_tracker
+                        scan_tracker,
+                        use_advanced=True,
+                        scan_mode=scan_config.get('scan_mode', 'smart')
                     )
                 
                 logger.info(f"[SCAN-THREAD] ✅ Scan function returned")
@@ -1356,16 +1361,18 @@ if __name__ == '__main__':
     logger.info("  🗑️  POST /api/database/clear - Clear database")
     
     # Start the server
-    logger.info(f"🌐 Server starting on http://0.0.0.0:8080")
+    port = int(os.environ.get('PORT', 8080))
+    logger.info(f"🌐 Server starting on http://0.0.0.0:{port}")
     logger.info(f"📱 WebSocket available for real-time updates")
     logger.info(f"🧪 Run 'python test_api.py' to test all endpoints")
     
     try:
         # Use development configuration with eventlet (production should use gunicorn)
+        port = int(os.environ.get('PORT', 8080))
         socketio.run(
             app, 
             host='0.0.0.0', 
-            port=8080, 
+            port=port, 
             debug=False,
             use_reloader=False,
             log_output=True
