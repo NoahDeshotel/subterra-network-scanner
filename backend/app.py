@@ -4,9 +4,10 @@ Enhanced Network Scanner Backend - Netdisco-Inspired Implementation
 Combines modern UI with comprehensive network discovery and inventory management
 """
 
-# Monkey patch eventlet before importing anything else
-import eventlet
-eventlet.monkey_patch()
+# DO NOT use eventlet - it breaks threading needed for scans
+# Use threading mode instead for socketio
+# import eventlet
+# eventlet.monkey_patch()
 
 import os
 import sys
@@ -58,11 +59,11 @@ app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'enhanced-network-scanner-key
 # Enable CORS
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
-# Initialize SocketIO with proper configuration
+# Initialize SocketIO with threading mode for proper background task execution
 socketio = SocketIO(
     app, 
     cors_allowed_origins="*", 
-    async_mode='eventlet',  # Use eventlet for proper async WebSocket handling
+    async_mode='threading',  # Use threading mode - eventlet breaks scan threads
     logger=True,
     engineio_logger=False,
     ping_timeout=60,
@@ -391,7 +392,8 @@ def start_scan():
             'vulnerability_scan': data.get('vulnerability_scan', False),  # Disable by default for faster scans
             'snmp_communities': data.get('snmp_communities', ['public']),
             'topology_discovery': data.get('topology_discovery', False),  # Disable by default
-            'scanner_type': data.get('scanner_type', 'simple')  # Use simple scanner by default
+            'scanner_type': data.get('scanner_type', 'simple'),  # Use simple scanner by default
+            'scan_mode': data.get('scan_mode', 'smart')  # Scan mode for large networks: smart, thorough, or full
         }
         
         logger.info(f"Starting scan {scan_id} with config: {scan_config}")
@@ -510,6 +512,13 @@ def start_scan():
         
         # Background task to start everything
         def start_scan_background():
+            print(f"\n{'='*60}", flush=True)
+            print(f"[SCAN-THREAD] SCAN STARTING: {scan_id}", flush=True)
+            print(f"[SCAN-THREAD] Subnet: {scan_config['subnet']}", flush=True)
+            print(f"[SCAN-THREAD] Mode: {scan_config.get('scan_mode', 'smart')}", flush=True)
+            print(f"[SCAN-THREAD] Scanner: {scan_config.get('scanner_type', 'simple')}", flush=True)
+            print(f"{'='*60}\n", flush=True)
+            
             logger.info(f"[SCAN-THREAD] Thread function called for scan {scan_id}")
             logger.info(f"[SCAN-THREAD] Thread name: {threading.current_thread().name}")
             logger.info(f"[SCAN-THREAD] Scan config: {json.dumps(scan_config, indent=2)}")
@@ -563,34 +572,27 @@ def start_scan():
                 logger.info(f"[SCAN-THREAD] Selecting scanner based on type: {scanner_type}")
                 
                 if scanner_type == 'enhanced' or scan_config.get('deep_scan', False):
+                    print(f"[SCAN-THREAD-PRINT] Using ENHANCED scanner", flush=True)
                     logger.info(f"[SCAN-THREAD] Using ENHANCED scanner with advanced features")
-                    try:
-                        from scanner.enhanced_discovery import EnhancedNetworkDiscovery, discover_network_enhanced
-                        logger.info(f"[SCAN-THREAD] ✅ Successfully imported enhanced scanner")
-                        
-                        # Use enhanced discovery for deep scans
-                        logger.info(f"[SCAN-THREAD] Running enhanced network discovery")
-                        logger.info(f"[SCAN-THREAD] Features enabled: SNMP={scan_config.get('snmp_communities')}, Vulnerability={scan_config.get('vulnerability_scan')}, Topology={scan_config.get('topology_discovery')}")
-                        
-                        # Run enhanced discovery asynchronously
-                        devices, summary = asyncio.run(discover_network_enhanced(
-                            scan_config['subnet'],
-                            deep_scan=True,
-                            scan_id=scan_id
-                        ))
-                        
-                    except ImportError as e:
-                        logger.error(f"[SCAN-THREAD] Enhanced scanner not available, falling back to simple: {e}")
-                        # Fallback to simple scanner
-                        from scanner.main_scanner import scan_with_robust_progress
-                        devices, summary = scan_with_robust_progress(
-                            scan_config['subnet'], 
-                            scan_id,
-                            scan_tracker
-                        )
-                    except Exception as e:
-                        logger.error(f"[SCAN-THREAD] Enhanced scan failed: {e}", exc_info=True)
-                        raise
+                    
+                    # Import the main scanner which includes subnet scanning for large networks
+                    from scanner.main_scanner import scan_with_robust_progress
+                    print(f"[SCAN-THREAD-PRINT] Imported scan_with_robust_progress", flush=True)
+                    logger.info(f"[SCAN-THREAD] ✅ Successfully imported main scanner with subnet scanning")
+                    
+                    # Use main scanner which handles large networks intelligently
+                    logger.info(f"[SCAN-THREAD] Running main scanner with subnet support")
+                    logger.info(f"[SCAN-THREAD] Features enabled: SNMP={scan_config.get('snmp_communities')}, Vulnerability={scan_config.get('vulnerability_scan')}, Topology={scan_config.get('topology_discovery')}")
+                    logger.info(f"[SCAN-THREAD] Scan mode: {scan_config.get('scan_mode', 'smart')}")
+                    
+                    # Run the main scanner which includes subnet scanning
+                    devices, summary = scan_with_robust_progress(
+                        scan_config['subnet'], 
+                        scan_id,
+                        scan_tracker,
+                        use_advanced=True,  # Use advanced features for enhanced scanner
+                        scan_mode=scan_config.get('scan_mode', 'smart')
+                    )
                         
                 else:
                     logger.info(f"[SCAN-THREAD] Using SIMPLE scanner for quick scan")
@@ -607,7 +609,9 @@ def start_scan():
                     devices, summary = scan_with_robust_progress(
                         scan_config['subnet'], 
                         scan_id,
-                        scan_tracker
+                        scan_tracker,
+                        use_advanced=True,
+                        scan_mode=scan_config.get('scan_mode', 'smart')
                     )
                 
                 logger.info(f"[SCAN-THREAD] ✅ Scan function returned")
@@ -715,11 +719,18 @@ def start_scan():
                 })
                 logger.info(f"[SCAN-THREAD] Scan thread exiting due to error")
         
-        # Start background thread
+        # Start background thread - now that we're using threading mode, normal threads work
         logger.info(f"Starting scan thread for {scan_id}")
-        scan_thread = threading.Thread(target=start_scan_background, name=f"scan-{scan_id[:8]}")
-        scan_thread.daemon = True
+        
+        # Use a regular thread since we're in threading mode
+        scan_thread = threading.Thread(
+            target=start_scan_background, 
+            name=f"scan-{scan_id[:8]}",
+            daemon=True
+        )
         scan_thread.start()
+        
+        logger.info(f"Scan thread started successfully - is_alive: {scan_thread.is_alive()}")
         
         logger.info(f"Returning response immediately for {scan_id}")
         return response
@@ -1356,19 +1367,22 @@ if __name__ == '__main__':
     logger.info("  🗑️  POST /api/database/clear - Clear database")
     
     # Start the server
-    logger.info(f"🌐 Server starting on http://0.0.0.0:8080")
+    port = int(os.environ.get('PORT', 5002))
+    logger.info(f"🌐 Server starting on http://0.0.0.0:{port}")
     logger.info(f"📱 WebSocket available for real-time updates")
     logger.info(f"🧪 Run 'python test_api.py' to test all endpoints")
     
     try:
         # Use development configuration with eventlet (production should use gunicorn)
+        port = int(os.environ.get('PORT', 5002))
         socketio.run(
             app, 
             host='0.0.0.0', 
-            port=8080, 
+            port=port, 
             debug=False,
             use_reloader=False,
-            log_output=True
+            log_output=True,
+            allow_unsafe_werkzeug=True  # Allow development server for testing
         )
     except KeyboardInterrupt:
         logger.info("🛑 Server shutdown requested")

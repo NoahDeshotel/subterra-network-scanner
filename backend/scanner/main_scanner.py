@@ -14,6 +14,14 @@ from typing import Dict, Tuple, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import platform
 
+# Import advanced scanner for enhanced capabilities
+try:
+    from .advanced_scanner import AdvancedNetworkScanner, advanced_network_scan
+    ADVANCED_SCANNER_AVAILABLE = True
+except ImportError:
+    ADVANCED_SCANNER_AVAILABLE = False
+    logger.warning("Advanced scanner not available, using basic scanning")
+
 logger = logging.getLogger(__name__)
 
 def emit_progress(scan_id: str, percentage: int, message: str, scan_tracker=None):
@@ -227,14 +235,8 @@ def robust_network_scan(subnet: str, scan_id: str, scan_tracker=None) -> Tuple[D
         
         emit_progress(scan_id, 5, f"Starting scan of {subnet} ({total_hosts} hosts)", scan_tracker)
         
-        # Limit scan size for performance
-        if total_hosts > 1024:
-            logger.warning(f"Large network detected ({total_hosts} hosts), limiting to first 256")
-            hosts = hosts[:256]
-            total_hosts = 256
-            emit_progress(scan_id, 10, f"Scanning first 256 hosts of network", scan_tracker)
-        else:
-            emit_progress(scan_id, 10, f"Preparing to scan {total_hosts} hosts", scan_tracker)
+        # Don't limit here - let subnet scanner handle large networks
+        emit_progress(scan_id, 10, f"Preparing to scan {total_hosts} hosts", scan_tracker)
         
         # Use ThreadPoolExecutor for concurrent scanning
         max_workers = min(50, total_hosts)  # Limit concurrent threads
@@ -324,24 +326,85 @@ def robust_network_scan(subnet: str, scan_id: str, scan_tracker=None) -> Tuple[D
     
     return devices, summary
 
-def scan_with_robust_progress(subnet: str, scan_id: str, scan_tracker=None) -> Tuple[Dict, Dict]:
+def scan_with_robust_progress(subnet: str, scan_id: str, scan_tracker=None, use_advanced: bool = True, scan_mode: str = 'smart') -> Tuple[Dict, Dict]:
     """
     Main entry point for network scanning with progress tracking
+    
+    Args:
+        subnet: Target subnet to scan
+        scan_id: Unique scan identifier
+        scan_tracker: Scan tracker object for progress updates
+        use_advanced: Whether to use advanced scanning capabilities (default: True)
+        scan_mode: Scanning mode for large networks ('smart', 'thorough', 'full')
     """
+    print(f"\n{'='*70}", flush=True)
+    print(f"[MAIN-SCANNER] SCAN EXECUTING", flush=True)
+    print(f"[MAIN-SCANNER] Subnet: {subnet}", flush=True) 
+    print(f"[MAIN-SCANNER] Scan Mode: {scan_mode}", flush=True)
+    print(f"[MAIN-SCANNER] Use Advanced: {use_advanced}", flush=True)
+    print(f"{'='*70}\n", flush=True)
+    
     logger.info(f"[MAIN-SCANNER] ============================================")
     logger.info(f"[MAIN-SCANNER] NETWORK SCAN INITIATED")
     logger.info(f"[MAIN-SCANNER] Scan ID: {scan_id}")
     logger.info(f"[MAIN-SCANNER] Target Subnet: {subnet}")
     logger.info(f"[MAIN-SCANNER] Tracker Available: {scan_tracker is not None}")
+    logger.info(f"[MAIN-SCANNER] Advanced Scanner: {ADVANCED_SCANNER_AVAILABLE and use_advanced}")
+    logger.info(f"[MAIN-SCANNER] Scan Mode: {scan_mode}")
     logger.info(f"[MAIN-SCANNER] ============================================")
     
     # Emit initial progress
     emit_progress(scan_id, 0, "Initializing network scan", scan_tracker)
     
     try:
-        logger.info(f"[MAIN-SCANNER] Calling robust_network_scan function")
-        # Perform the scan
-        devices, summary = robust_network_scan(subnet, scan_id, scan_tracker)
+        # Check network size
+        network = ipaddress.ip_network(subnet, strict=False)
+        total_hosts = network.num_addresses - 2  # Subtract network and broadcast
+        
+        print(f"[MAIN-SCANNER] Network: {network}, Total hosts: {total_hosts}", flush=True)
+        logger.info(f"[MAIN-SCANNER] Network analysis: {network} has {total_hosts} hosts")
+        
+        # For large networks (more than 1024 hosts), use subnet scanner
+        if total_hosts > 1024:
+            print(f"[MAIN-SCANNER] LARGE NETWORK DETECTED! Will use subnet scanner", flush=True)
+            logger.info(f"[MAIN-SCANNER] Large network detected ({total_hosts} hosts), using intelligent subnet scanning")
+            emit_progress(scan_id, 5, f"Large network detected: {total_hosts} hosts. Using {scan_mode} scanning mode", scan_tracker)
+            
+            # Use the subnet scanner for large networks
+            try:
+                from .subnet_scanner import scan_large_network_smart
+                import asyncio
+                
+                # Run the async subnet scanner
+                devices, summary = asyncio.run(
+                    scan_large_network_smart(subnet, scan_id, scan_tracker, scan_mode)
+                )
+                
+                logger.info(f"[MAIN-SCANNER] Subnet scan completed: {len(devices)} devices found")
+                return devices, summary
+                
+            except ImportError as e:
+                logger.error(f"[MAIN-SCANNER] ❌ Subnet scanner import failed: {e}")
+                # Fall back to limited scanning but with a warning
+                logger.warning(f"[MAIN-SCANNER] Falling back to limited scanning (first 512 hosts)")
+                emit_progress(scan_id, 5, "Using limited scanning for large network", scan_tracker)
+                # Limit the hosts to scan
+                hosts = list(network.hosts())[:512]
+                limited_subnet = str(network).split('/')[0] + '/24'  # Limit to /24
+                if ADVANCED_SCANNER_AVAILABLE and use_advanced:
+                    devices, summary = advanced_network_scan(limited_subnet, scan_id, scan_tracker)
+                else:
+                    devices, summary = robust_network_scan(limited_subnet, scan_id, scan_tracker)
+                return devices, summary
+        
+        # For smaller networks only (not large networks)
+        else:
+            if ADVANCED_SCANNER_AVAILABLE and use_advanced:
+                logger.info(f"[MAIN-SCANNER] Using ADVANCED scanning capabilities for small network")
+                devices, summary = advanced_network_scan(subnet, scan_id, scan_tracker)
+            else:
+                logger.info(f"[MAIN-SCANNER] Using basic scanning capabilities for small network")
+                devices, summary = robust_network_scan(subnet, scan_id, scan_tracker)
         
         logger.info(f"[MAIN-SCANNER] Scan function returned successfully")
         logger.info(f"[MAIN-SCANNER] Devices returned: {len(devices) if devices else 0}")

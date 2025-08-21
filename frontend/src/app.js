@@ -36,9 +36,8 @@ class NetScopeApp {
     }
     
     setupWebSocket() {
-        // Connect to the backend WebSocket server through nginx proxy
-        // Use the same origin since nginx proxies /socket.io/ to the backend
-        this.socket = io({
+        // Connect to the backend WebSocket server directly on port 5002 for local development
+        this.socket = io(window.location.protocol + '//' + window.location.hostname + ':5002', {
             path: '/socket.io/',
             transports: ['websocket', 'polling'],
             reconnection: true,
@@ -80,6 +79,59 @@ class NetScopeApp {
         this.socket.on('network_alert', (alert) => {
             this.handleNetworkAlert(alert);
         });
+    }
+    
+    async apiCall(endpoint, options = {}) {
+        try {
+            const baseUrl = window.location.origin;
+            const response = await fetch(`${baseUrl}${endpoint}`, {
+                ...options,
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...options.headers
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error(`API call failed: ${response.statusText}`);
+            }
+            
+            return await response.json();
+        } catch (error) {
+            console.error(`❌ API call to ${endpoint} failed:`, error);
+            throw error;
+        }
+    }
+    
+    async switchView(viewName) {
+        console.log(`📍 Switching to ${viewName} view`);
+        
+        // Hide all views
+        document.querySelectorAll('.view').forEach(view => {
+            view.classList.remove('active');
+        });
+        
+        // Show selected view
+        const targetView = document.getElementById(`${viewName}-view`);
+        if (targetView) {
+            targetView.classList.add('active');
+        }
+        
+        // Update current view
+        this.currentView = viewName;
+        
+        // Load data for the view
+        await this.loadViewData(viewName);
+    }
+    
+    setActiveNavItem(navItem) {
+        // Remove active class from all nav items
+        document.querySelectorAll('.nav-item').forEach(item => {
+            item.classList.remove('active');
+        });
+        
+        // Add active class to clicked item
+        navItem.classList.add('active');
     }
     
     setupEventListeners() {
@@ -293,7 +345,7 @@ class NetScopeApp {
                 await this.loadTopologyData();
                 break;
             case 'devices':
-                await this.loadDeviceInventory();
+                await this.loadDevicesData();
                 break;
             case 'vulnerabilities':
                 await this.loadVulnerabilityData();
@@ -350,6 +402,7 @@ class NetScopeApp {
             const response = await this.apiCall('/api/scan/start', 'POST', {
                 subnet: 'auto',  // Let backend auto-detect the correct subnet
                 scan_type: 'quick',
+                scan_mode: 'smart',  // Enable intelligent subnet scanning
                 aggressive: false,
                 scanner_type: 'auto'
             });
@@ -378,6 +431,8 @@ class NetScopeApp {
             const response = await this.apiCall('/api/scan/start', 'POST', {
                 subnet: subnet,
                 scan_type: scanType,
+                scan_mode: scanType === 'comprehensive' ? 'full' : 'smart',  // Use FULL mode for comprehensive scans to scan entire subnet
+                scanner_type: scanType === 'comprehensive' ? 'enhanced' : 'auto',  // Use enhanced scanner for comprehensive scans
                 aggressive: scanType === 'comprehensive',
                 vulnerability_scan: scanType === 'vulnerability'
             });
@@ -403,6 +458,8 @@ class NetScopeApp {
             const response = await this.apiCall('/api/scan/start', 'POST', {
                 subnet: 'auto',
                 scan_type: 'emergency',
+                scan_mode: 'full',  // Use FULL mode for emergency scans to ensure complete coverage
+                scanner_type: 'enhanced',  // Use enhanced scanner for emergency scans
                 aggressive: true,
                 vulnerability_scan: true,
                 priority: 'high'
@@ -804,7 +861,8 @@ class NetScopeApp {
     }
     
     async apiCall(endpoint, method = 'GET', body = null) {
-        const baseUrl = window.location.protocol + '//' + window.location.host;
+        // Use backend on port 5002 for local development
+        const baseUrl = window.location.protocol + '//' + window.location.hostname + ':5002';
         const url = baseUrl + endpoint;
         
         const options = {
@@ -1055,28 +1113,58 @@ class NetScopeApp {
                             <th>IP Address</th>
                             <th>Hostname</th>
                             <th>Type</th>
-                            <th>OS</th>
                             <th>MAC Address</th>
+                            <th>Vendor</th>
+                            <th>OS</th>
+                            <th>Open Ports</th>
+                            <th>Services</th>
                             <th>Last Seen</th>
                             <th>Status</th>
                         </tr>
                     </thead>
                     <tbody>
-                        ${devices.map(device => `
-                            <tr class="device-row ${device.status}">
+                        ${devices.map(device => {
+                            // Format device type for display
+                            const deviceTypeDisplay = (device.device_type || 'unknown')
+                                .replace(/_/g, ' ')
+                                .replace(/\b\w/g, l => l.toUpperCase());
+                            
+                            // Format open ports
+                            const openPorts = device.open_ports || [];
+                            const portsDisplay = openPorts.length > 0 
+                                ? `${openPorts.length} ports` 
+                                : 'None';
+                            
+                            // Format services
+                            const servicesDisplay = device.service_summary || 
+                                (openPorts.length > 0 ? openPorts.slice(0, 3).join(', ') + (openPorts.length > 3 ? '...' : '') : 'None');
+                            
+                            // Format OS
+                            const osDisplay = device.os_detected || device.os || 'Unknown';
+                            
+                            // Format MAC vendor
+                            const vendorDisplay = device.mac_vendor || 'Unknown';
+                            
+                            return `
+                            <tr class="device-row ${device.status}" title="Click for details">
                                 <td class="device-ip">${device.ip}</td>
-                                <td class="device-hostname">${device.hostname || 'Unknown'}</td>
+                                <td class="device-hostname">${device.hostname || '<em>Unknown</em>'}</td>
                                 <td class="device-type">
-                                    <span class="type-badge ${device.device_type}">${device.device_type}</span>
+                                    <span class="type-badge ${device.device_type}">${deviceTypeDisplay}</span>
                                 </td>
-                                <td class="device-os">${device.os ? device.os.substring(0, 30) + '...' : 'Unknown'}</td>
-                                <td class="device-mac">${device.mac_address || 'Unknown'}</td>
-                                <td class="device-last-seen">${this.formatTimestamp(device.last_seen)}</td>
+                                <td class="device-mac">${device.mac_address || '<em>Not detected</em>'}</td>
+                                <td class="device-vendor">${vendorDisplay}</td>
+                                <td class="device-os" title="${osDisplay}">${osDisplay.length > 20 ? osDisplay.substring(0, 20) + '...' : osDisplay}</td>
+                                <td class="device-ports">
+                                    <span class="ports-badge">${portsDisplay}</span>
+                                </td>
+                                <td class="device-services" title="${servicesDisplay}">${servicesDisplay.length > 30 ? servicesDisplay.substring(0, 30) + '...' : servicesDisplay}</td>
+                                <td class="device-last-seen">${this.formatTimestamp(device.last_seen || device.discovery_time)}</td>
                                 <td class="device-status">
                                     <span class="status-indicator ${device.status}">${device.status}</span>
                                 </td>
                             </tr>
-                        `).join('')}
+                        `}).join('')}
                     </tbody>
                 </table>
             </div>
@@ -1471,6 +1559,142 @@ class NetScopeApp {
                 </div>
             </div>
         `).join('');
+    }
+    
+    async handleScanComplete(results) {
+        console.log('🔄 Processing scan completion:', results);
+        this.scanInProgress = false;
+        this.hideScanProgress();
+        
+        // Show success message
+        const devicesFound = results.devices_found || 0;
+        const message = `Scan completed: ${devicesFound} devices found`;
+        this.showToast(message, 'success');
+        
+        // Reload device data to show new results
+        if (this.currentView === 'devices') {
+            await this.loadDevicesData();
+        }
+        
+        // Update overview stats
+        await this.updateOverviewStats();
+    }
+    
+    handleDeviceDiscovered(device) {
+        console.log('🖥️ Processing discovered device:', device);
+        
+        // Show notification for discovered device
+        const deviceInfo = `${device.hostname || device.ip} (${device.device_type || 'Unknown'})`;
+        this.showToast(`Device found: ${deviceInfo}`, 'info');
+        
+        // If we're on the devices view, we could update it in real-time
+        // For now, we'll wait for the full scan to complete
+    }
+    
+    async loadDevicesData() {
+        try {
+            console.log('📊 Loading devices data...');
+            const response = await this.apiCall('/api/devices');
+            
+            if (response && response.devices) {
+                this.renderDeviceInventoryTable(response.devices);
+                this.updateKPICard('total-devices', response.devices.length);
+            }
+        } catch (error) {
+            console.error('❌ Error loading devices:', error);
+            this.showToast('Failed to load device inventory', 'error');
+        }
+    }
+    
+    async updateOverviewStats() {
+        try {
+            const [statsResponse, devicesResponse] = await Promise.all([
+                this.apiCall('/api/statistics/enhanced'),
+                this.apiCall('/api/devices')
+            ]);
+            
+            if (statsResponse) {
+                this.updateKPICard('total-devices', statsResponse.total_devices || 0);
+                this.updateKPICard('active-devices', statsResponse.active_devices || 0);
+            }
+            
+            if (devicesResponse && devicesResponse.devices) {
+                // Update device type distribution
+                const deviceTypes = {};
+                devicesResponse.devices.forEach(device => {
+                    const type = device.device_type || 'unknown';
+                    deviceTypes[type] = (deviceTypes[type] || 0) + 1;
+                });
+            }
+        } catch (error) {
+            console.error('❌ Error updating overview stats:', error);
+        }
+    }
+    
+    hideScanProgress() {
+        const progressBar = document.getElementById('scan-progress-bar');
+        if (progressBar) {
+            progressBar.style.display = 'none';
+        }
+    }
+    
+    showScanProgress() {
+        const progressBar = document.getElementById('scan-progress-bar');
+        if (progressBar) {
+            progressBar.style.display = 'block';
+        }
+    }
+    
+    showToast(message, type = 'info') {
+        const toastContainer = document.getElementById('toast-container');
+        if (!toastContainer) return;
+        
+        const toast = document.createElement('div');
+        toast.className = `toast ${type}`;
+        toast.innerHTML = `
+            <i class="fas fa-${type === 'success' ? 'check-circle' : type === 'error' ? 'exclamation-circle' : 'info-circle'}"></i>
+            <span>${message}</span>
+        `;
+        
+        toastContainer.appendChild(toast);
+        
+        // Auto-remove after 5 seconds
+        setTimeout(() => {
+            toast.classList.add('fade-out');
+            setTimeout(() => toast.remove(), 300);
+        }, 5000);
+    }
+    
+    async loadInitialData() {
+        try {
+            console.log('📊 Loading initial data...');
+            
+            // Load data based on current view
+            await this.loadViewData(this.currentView);
+            
+            // Load general statistics
+            const stats = await this.apiCall('/api/statistics/enhanced');
+            if (stats) {
+                this.updateKPICard('total-devices', stats.total_devices || 0);
+                this.updateKPICard('security-score', stats.security_score || '--');
+            }
+        } catch (error) {
+            console.error('❌ Error loading initial data:', error);
+        }
+    }
+    
+    startRealTimeUpdates() {
+        // Set up periodic data refresh (every 30 seconds)
+        this.refreshInterval = setInterval(() => {
+            if (!this.scanInProgress) {
+                this.loadViewData(this.currentView);
+            }
+        }, 30000);
+    }
+    
+    initializeCharts() {
+        // Placeholder for chart initialization
+        console.log('📈 Initializing charts...');
     }
 }
 
