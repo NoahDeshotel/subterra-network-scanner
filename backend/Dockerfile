@@ -26,8 +26,8 @@ COPY . .
 RUN mkdir -p /app/data/scans
 
 # Set permissions
-RUN chmod +x /app/app.py
+RUN chmod +x /app/app_clean.py
 
 EXPOSE 8080 8765
 
-CMD ["python", "app.py"]
+CMD ["python", "app_clean.py"]

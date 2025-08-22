@@ -393,8 +393,46 @@ def start_scan():
             'snmp_communities': data.get('snmp_communities', ['public']),
             'topology_discovery': data.get('topology_discovery', False),  # Disable by default
             'scanner_type': data.get('scanner_type', 'simple'),  # Use simple scanner by default
-            'scan_mode': data.get('scan_mode', 'smart')  # Scan mode for large networks: smart, thorough, or full
+            'scan_mode': data.get('scan_mode', None)  # Will be auto-determined based on subnet size if not specified
         }
+        
+        # Auto-determine scan mode based on subnet size if not specified
+        if scan_config['scan_mode'] is None and scan_config['subnet'] != 'auto':
+            try:
+                import ipaddress
+                network = ipaddress.ip_network(scan_config['subnet'], strict=False)
+                prefix_len = network.prefixlen
+                
+                # Determine scan mode based on network size
+                if prefix_len >= 24:
+                    # /24 or smaller - always full scan
+                    scan_config['scan_mode'] = 'full'
+                    logger.info(f"Auto-selected 'full' scan mode for /{prefix_len} network")
+                elif prefix_len >= 20:
+                    # /20 to /23 - thorough scan by default
+                    scan_config['scan_mode'] = 'thorough'
+                    logger.info(f"Auto-selected 'thorough' scan mode for /{prefix_len} network")
+                elif prefix_len == 16:
+                    # /16 - full scan if explicitly requested, otherwise thorough
+                    # Check if user wants comprehensive scanning
+                    if data.get('comprehensive', False) or data.get('full_scan', False):
+                        scan_config['scan_mode'] = 'full'
+                        logger.info(f"Auto-selected 'full' scan mode for /16 network (comprehensive requested)")
+                    else:
+                        scan_config['scan_mode'] = 'thorough'
+                        logger.info(f"Auto-selected 'thorough' scan mode for /16 network")
+                else:
+                    # Larger than /16 - smart scan by default
+                    scan_config['scan_mode'] = 'smart'
+                    logger.info(f"Auto-selected 'smart' scan mode for /{prefix_len} network")
+                    
+            except Exception as e:
+                logger.warning(f"Could not auto-determine scan mode: {e}")
+                scan_config['scan_mode'] = 'smart'  # Default fallback
+        
+        # If still no scan mode, default to smart
+        if scan_config['scan_mode'] is None:
+            scan_config['scan_mode'] = 'smart'
         
         logger.info(f"Starting scan {scan_id} with config: {scan_config}")
         
@@ -610,7 +648,7 @@ def start_scan():
                         scan_config['subnet'], 
                         scan_id,
                         scan_tracker,
-                        use_advanced=True,
+                        use_advanced=False,  # Disable advanced scanner for simple mode
                         scan_mode=scan_config.get('scan_mode', 'smart')
                     )
                 
@@ -1367,14 +1405,14 @@ if __name__ == '__main__':
     logger.info("  🗑️  POST /api/database/clear - Clear database")
     
     # Start the server
-    port = int(os.environ.get('PORT', 5002))
+    port = int(os.environ.get('PORT', 8080))
     logger.info(f"🌐 Server starting on http://0.0.0.0:{port}")
     logger.info(f"📱 WebSocket available for real-time updates")
     logger.info(f"🧪 Run 'python test_api.py' to test all endpoints")
     
     try:
         # Use development configuration with eventlet (production should use gunicorn)
-        port = int(os.environ.get('PORT', 5002))
+        port = int(os.environ.get('PORT', 8080))
         socketio.run(
             app, 
             host='0.0.0.0', 

@@ -134,27 +134,56 @@ def scan_single_host(ip: str, scan_id: str = None, scan_tracker=None) -> Optiona
         ip_str = str(ip)
         logger.debug(f"[HOST-SCAN] Starting scan of {ip_str}")
         
-        # First check if host is up
-        logger.debug(f"[HOST-SCAN] Checking if {ip_str} is up via ping")
-        if not ping_host(ip_str, timeout=1.0):
-            logger.debug(f"[HOST-SCAN] Ping failed for {ip_str}, trying TCP fallback on port 80")
-            # Try TCP scan on port 80 as fallback
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(0.5)
-            result = sock.connect_ex((ip_str, 80))
-            sock.close()
-            if result != 0:
-                logger.debug(f"[HOST-SCAN] Host {ip_str} appears to be down (no ping, no TCP 80)")
-                return None
-            else:
-                logger.debug(f"[HOST-SCAN] Host {ip_str} responsive on TCP port 80")
+        # First check if host is up - use multiple detection methods
+        logger.debug(f"[HOST-SCAN] Checking if {ip_str} is up")
+        host_is_up = False
+        discovery_method = 'unknown'
+        
+        # Method 1: Try ping
+        if ping_host(ip_str, timeout=1.0):
+            logger.debug(f"[HOST-SCAN] Host {ip_str} responded to ping")
+            host_is_up = True
+            discovery_method = 'ping'
+        
+        # Method 2: Try ARP for local networks (more reliable)
+        if not host_is_up and platform.system().lower() != 'windows':
+            try:
+                import subprocess
+                result = subprocess.run(['arp', '-n', ip_str], capture_output=True, text=True, timeout=1.0)
+                if 'no entry' not in result.stdout.lower() and ip_str in result.stdout:
+                    logger.debug(f"[HOST-SCAN] Host {ip_str} found in ARP table")
+                    host_is_up = True
+                    discovery_method = 'arp'
+            except:
+                pass
+        
+        # Method 3: Try common TCP ports
+        if not host_is_up:
+            common_ports = [80, 443, 22, 445, 3389, 8080, 139, 135, 21, 23, 53, 110, 143]
+            for port in common_ports:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(0.3)
+                try:
+                    result = sock.connect_ex((ip_str, port))
+                    sock.close()
+                    if result == 0:
+                        logger.debug(f"[HOST-SCAN] Host {ip_str} responsive on TCP port {port}")
+                        host_is_up = True
+                        discovery_method = f'tcp_{port}'
+                        break
+                except:
+                    sock.close()
+        
+        if not host_is_up:
+            logger.debug(f"[HOST-SCAN] Host {ip_str} appears to be down")
+            return None
         
         # Host is up, gather information
         device_info = {
             'ip': ip_str,
             'is_active': True,
             'status': 'active',
-            'discovery_method': 'ping'
+            'discovery_method': discovery_method
         }
         
         # Get hostname

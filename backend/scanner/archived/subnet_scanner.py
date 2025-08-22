@@ -63,10 +63,11 @@ class SubnetScanner:
                     logger.info(f"[SUBNET-SCAN] FULL MODE: Generated ALL {len(subnets_to_scan)} /24 subnets for complete /16 scan")
                     
                 elif scan_mode == 'thorough':
-                    # THOROUGH MODE: Scan first 100 /24 subnets plus priority ones
+                    # THOROUGH MODE: Scan all 256 /24 subnets for comprehensive coverage
+                    # This is more aggressive than smart mode but provides complete coverage
                     all_subnets = list(network.subnets(new_prefix=24))
-                    subnets_to_scan = all_subnets[:100]  # First 100 subnets
-                    logger.info(f"[SUBNET-SCAN] THOROUGH MODE: Selected {len(subnets_to_scan)} /24 subnets for /16 network")
+                    subnets_to_scan = all_subnets  # Scan ALL subnets in thorough mode for /16
+                    logger.info(f"[SUBNET-SCAN] THOROUGH MODE: Selected ALL {len(subnets_to_scan)} /24 subnets for comprehensive /16 network scan")
                     
                 else:  # smart mode (default)
                     # SMART MODE: Only scan priority subnets
@@ -346,8 +347,8 @@ class SubnetScanner:
         # Advanced scanner is too slow for 256 subnets
         hosts = list(subnet.hosts())  # Get all hosts in the subnet
         
-        # Use fast parallel scanning with higher concurrency
-        with ThreadPoolExecutor(max_workers=100) as executor:
+        # Use fast parallel scanning with optimal concurrency for better detection
+        with ThreadPoolExecutor(max_workers=50) as executor:
             futures = {executor.submit(self.fast_host_check, str(ip)): ip for ip in hosts}
             
             for future in as_completed(futures):
@@ -365,50 +366,250 @@ class SubnetScanner:
         return devices
     
     def fast_host_check(self, ip: str) -> Dict:
-        """Ultra-fast host checking for large network scans"""
-        # Try TCP connect on common ports for speed
-        common_ports = [22, 80, 443, 445, 3389, 8080]
+        """Enhanced host checking with better device detection"""
+        # More comprehensive port list for better device detection
+        common_ports = [80, 443, 22, 445, 3389, 8080, 8443, 3000, 5000, 21, 23, 25, 53, 110, 143, 139, 135, 8081, 5001]
+        open_ports = []
+        host_is_up = False
         
-        for port in common_ports:
+        # First, try a quick ping with better timeout
+        if self.ping_host(ip, timeout=0.5):
+            host_is_up = True
+        
+        # If ping fails, try ARP for local network devices (more reliable)
+        if not host_is_up and platform.system().lower() != 'windows':
+            try:
+                result = subprocess.run(['arp', '-n', ip], capture_output=True, text=True, timeout=0.5)
+                if 'no entry' not in result.stdout.lower() and ip in result.stdout:
+                    host_is_up = True
+            except:
+                pass
+        
+        # Scan common ports to gather more info - check first 10 for speed
+        for port in common_ports[:10]:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(0.2)  # Very short timeout for speed
+            sock.settimeout(0.3)  # Slightly longer timeout for better detection
             try:
                 result = sock.connect_ex((ip, port))
                 sock.close()
                 if result == 0:
-                    # Host is up, return basic info
-                    device = {
-                        'ip': ip,
-                        'is_active': True,
-                        'status': 'active',
-                        'open_ports': [port],
-                        'discovery_method': 'tcp_scan',
-                        'discovery_time': time.strftime('%Y-%m-%d %H:%M:%S')
-                    }
-                    
-                    # Try quick hostname lookup
-                    try:
-                        hostname, _, _ = socket.gethostbyaddr(ip)
-                        device['hostname'] = hostname
-                    except:
-                        device['hostname'] = ip
-                    
-                    return device
+                    open_ports.append(port)
+                    host_is_up = True
             except:
                 sock.close()
                 continue
         
-        # If no TCP ports responded, try ping as fallback
-        if self.ping_host(ip, timeout=0.2):
-            return {
-                'ip': ip,
-                'is_active': True,
-                'status': 'active',
-                'discovery_method': 'ping',
-                'discovery_time': time.strftime('%Y-%m-%d %H:%M:%S')
-            }
+        # If host is not up, return None
+        if not host_is_up:
+            return None
         
-        return None
+        # Host is up, gather comprehensive information
+        device = {
+            'ip': ip,
+            'ip_address': ip,  # Some parts expect ip_address field
+            'is_active': True,
+            'status': 'active',
+            'open_ports': open_ports,
+            'open_ports_count': len(open_ports),
+            'discovery_method': 'tcp_scan' if open_ports else 'ping',
+            'discovery_time': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'first_seen': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'last_seen': time.strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        # Try hostname lookup with slightly longer timeout
+        try:
+            socket.setdefaulttimeout(0.5)
+            hostname, _, _ = socket.gethostbyaddr(ip)
+            device['hostname'] = hostname
+        except:
+            device['hostname'] = None
+        
+        # Classify device based on open ports
+        device['device_type'] = self.classify_device(open_ports, device.get('hostname'))
+        
+        # Determine OS based on port signatures
+        device['os'] = self.detect_os(open_ports)
+        
+        # Determine vendor based on hostname and ports
+        device['vendor'] = self.detect_vendor(device.get('hostname'), open_ports)
+        
+        # Add service information
+        device['services'] = self.identify_services(open_ports)
+        
+        # Format ports for database (expected format)
+        device['ports'] = []
+        for port in open_ports:
+            port_info = {
+                'port': port,
+                'protocol': 'tcp',
+                'state': 'open',
+                'service': self.get_service_name(port)
+            }
+            device['ports'].append(port_info)
+        
+        return device
+    
+    def classify_device(self, open_ports: List[int], hostname: str = None) -> str:
+        """Classify device based on open ports and hostname"""
+        if not open_ports and not hostname:
+            return 'unknown'
+        
+        # Router/Gateway detection
+        if hostname and any(x in hostname.lower() for x in ['router', 'gateway', 'gw', 'rtr']):
+            return 'router'
+        if 23 in open_ports or 161 in open_ports:  # Telnet or SNMP
+            return 'router'
+        
+        # Server detection
+        if 22 in open_ports and (3306 in open_ports or 5432 in open_ports):  # SSH + Database
+            return 'database_server'
+        if 80 in open_ports or 443 in open_ports or 8080 in open_ports:
+            return 'web_server'
+        if 22 in open_ports or 3389 in open_ports:  # SSH or RDP
+            return 'server'
+        
+        # Workstation detection
+        if 445 in open_ports or 139 in open_ports:  # SMB
+            return 'workstation'
+        if 3389 in open_ports:  # RDP
+            return 'windows_workstation'
+        
+        # Printer detection
+        if 9100 in open_ports or 631 in open_ports:  # Print services
+            return 'printer'
+        
+        # IoT/Embedded device
+        if 8080 in open_ports or 8443 in open_ports:
+            return 'iot_device'
+        
+        # Mail server
+        if 25 in open_ports or 110 in open_ports or 143 in open_ports:
+            return 'mail_server'
+        
+        # DNS server
+        if 53 in open_ports:
+            return 'dns_server'
+        
+        return 'unknown'
+    
+    def detect_os(self, open_ports: List[int]) -> str:
+        """Detect OS based on open port signatures"""
+        if not open_ports:
+            return 'Unknown'
+        
+        # Windows signatures
+        if 445 in open_ports or 139 in open_ports or 3389 in open_ports:
+            if 3389 in open_ports:
+                return 'Windows'
+            return 'Windows'
+        
+        # Linux/Unix signatures
+        if 22 in open_ports and 445 not in open_ports:
+            if 111 in open_ports or 2049 in open_ports:  # NFS
+                return 'Linux/Unix'
+            return 'Linux'
+        
+        # macOS signatures
+        if 548 in open_ports or 5900 in open_ports:  # AFP or VNC
+            return 'macOS'
+        
+        # Network device signatures
+        if 23 in open_ports and 22 not in open_ports:
+            return 'Network OS'
+        
+        # Web appliance
+        if (80 in open_ports or 443 in open_ports) and len(open_ports) <= 3:
+            return 'Embedded/IoT'
+        
+        return 'Unknown'
+    
+    def detect_vendor(self, hostname: str, open_ports: List[int]) -> str:
+        """Detect vendor based on hostname patterns and services"""
+        if hostname:
+            hostname_lower = hostname.lower()
+            
+            # Common vendor patterns in hostnames
+            if 'cisco' in hostname_lower or 'csco' in hostname_lower:
+                return 'Cisco'
+            if 'hp' in hostname_lower or 'procurve' in hostname_lower:
+                return 'HP'
+            if 'dell' in hostname_lower:
+                return 'Dell'
+            if 'ubnt' in hostname_lower or 'ubiquiti' in hostname_lower:
+                return 'Ubiquiti'
+            if 'apple' in hostname_lower or 'macbook' in hostname_lower or 'imac' in hostname_lower:
+                return 'Apple'
+            if 'android' in hostname_lower:
+                return 'Google/Android'
+            if 'amazon' in hostname_lower or 'kindle' in hostname_lower or 'echo' in hostname_lower:
+                return 'Amazon'
+            if 'synology' in hostname_lower or 'qnap' in hostname_lower:
+                return 'NAS Vendor'
+        
+        # Port-based vendor detection
+        if 3389 in open_ports and 445 in open_ports:
+            return 'Microsoft'
+        if 22 in open_ports and 548 in open_ports:
+            return 'Apple'
+        
+        return 'Unknown'
+    
+    def get_service_name(self, port: int) -> str:
+        """Get service name for a single port"""
+        port_services = {
+            21: 'FTP',
+            22: 'SSH',
+            23: 'Telnet',
+            25: 'SMTP',
+            53: 'DNS',
+            80: 'HTTP',
+            110: 'POP3',
+            143: 'IMAP',
+            443: 'HTTPS',
+            445: 'SMB',
+            3306: 'MySQL',
+            3389: 'RDP',
+            5432: 'PostgreSQL',
+            5900: 'VNC',
+            8080: 'HTTP-Proxy',
+            8443: 'HTTPS-Alt',
+            9100: 'Print',
+            27017: 'MongoDB'
+        }
+        return port_services.get(port, f'Port-{port}')
+    
+    def identify_services(self, open_ports: List[int]) -> List[str]:
+        """Identify services running on open ports"""
+        services = []
+        port_services = {
+            21: 'FTP',
+            22: 'SSH',
+            23: 'Telnet',
+            25: 'SMTP',
+            53: 'DNS',
+            80: 'HTTP',
+            110: 'POP3',
+            143: 'IMAP',
+            443: 'HTTPS',
+            445: 'SMB',
+            3306: 'MySQL',
+            3389: 'RDP',
+            5432: 'PostgreSQL',
+            5900: 'VNC',
+            8080: 'HTTP-Proxy',
+            8443: 'HTTPS-Alt',
+            9100: 'Print',
+            27017: 'MongoDB'
+        }
+        
+        for port in open_ports:
+            if port in port_services:
+                services.append(port_services[port])
+            else:
+                services.append(f'Port-{port}')
+        
+        return services
     
     def scan_host(self, ip: str) -> Dict:
         """Basic host scanning"""
