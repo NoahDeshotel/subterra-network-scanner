@@ -36,8 +36,8 @@ class NetScopeApp {
     }
     
     setupWebSocket() {
-        // Connect to the backend WebSocket server directly on port 5002 for local development
-        this.socket = io(window.location.protocol + '//' + window.location.hostname + ':5002', {
+        // Connect to the backend WebSocket server directly on port 8080 for Docker deployment
+        this.socket = io(window.location.protocol + '//' + window.location.hostname + ':8080', {
             path: '/socket.io/',
             transports: ['websocket', 'polling'],
             reconnection: true,
@@ -400,11 +400,12 @@ class NetScopeApp {
         
         try {
             const response = await this.apiCall('/api/scan/start', 'POST', {
-                subnet: 'auto',  // Let backend auto-detect the correct subnet
+                subnet: '10.0.0.0/24',  // Scan the full /24 subnet
                 scan_type: 'quick',
-                scan_mode: 'smart',  // Enable intelligent subnet scanning
+                scan_mode: 'full',  // Use FULL mode to ensure all devices are found
                 aggressive: false,
-                scanner_type: 'auto'
+                scanner_type: 'simple',  // Use simple scanner for speed
+                comprehensive: false
             });
             
             if (response.scan_id) {
@@ -424,17 +425,26 @@ class NetScopeApp {
             return;
         }
         
-        const subnet = document.getElementById('subnet-input')?.value || 'auto';
+        const subnet = document.getElementById('subnet-input')?.value || '10.0.0.0/24';
         const scanType = document.getElementById('scan-type')?.value || 'comprehensive';
+        
+        // Determine scan mode based on subnet size and scan type
+        let scanMode = 'full';  // Default to full for complete coverage
+        if (subnet.includes('/16')) {
+            scanMode = scanType === 'comprehensive' ? 'thorough' : 'smart';
+        } else if (subnet.includes('/24')) {
+            scanMode = 'full';  // Always full scan for /24
+        }
         
         try {
             const response = await this.apiCall('/api/scan/start', 'POST', {
                 subnet: subnet,
                 scan_type: scanType,
-                scan_mode: scanType === 'comprehensive' ? 'full' : 'smart',  // Use FULL mode for comprehensive scans to scan entire subnet
-                scanner_type: scanType === 'comprehensive' ? 'enhanced' : 'auto',  // Use enhanced scanner for comprehensive scans
+                scan_mode: scanMode,
+                scanner_type: scanType === 'comprehensive' ? 'enhanced' : 'simple',
                 aggressive: scanType === 'comprehensive',
-                vulnerability_scan: scanType === 'vulnerability'
+                vulnerability_scan: scanType === 'vulnerability',
+                comprehensive: scanType === 'comprehensive'
             });
             
             if (response.scan_id) {
@@ -456,13 +466,14 @@ class NetScopeApp {
         
         try {
             const response = await this.apiCall('/api/scan/start', 'POST', {
-                subnet: 'auto',
+                subnet: '10.0.0.0/24',  // Scan the complete subnet
                 scan_type: 'emergency',
                 scan_mode: 'full',  // Use FULL mode for emergency scans to ensure complete coverage
                 scanner_type: 'enhanced',  // Use enhanced scanner for emergency scans
                 aggressive: true,
                 vulnerability_scan: true,
-                priority: 'high'
+                priority: 'high',
+                comprehensive: true
             });
             
             if (response.scan_id) {
@@ -861,8 +872,8 @@ class NetScopeApp {
     }
     
     async apiCall(endpoint, method = 'GET', body = null) {
-        // Use backend on port 5002 for local development
-        const baseUrl = window.location.protocol + '//' + window.location.hostname + ':5002';
+        // Use backend on port 8080 for Docker deployment
+        const baseUrl = window.location.protocol + '//' + window.location.hostname + ':8080';
         const url = baseUrl + endpoint;
         
         const options = {

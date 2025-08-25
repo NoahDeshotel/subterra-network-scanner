@@ -1697,7 +1697,7 @@ class EnhancedInventoryManager:
                 if device_data.get('ports'):
                     for port_info in device_data['ports']:
                         cursor.execute('''
-                            INSERT INTO device_ports (device_id, port, protocol, state, service, version)
+                            INSERT INTO device_ports (device_id, port_number, protocol, state, service_name, service_version)
                             VALUES (?, ?, ?, ?, ?, ?)
                         ''', (
                             device_id,
@@ -1760,16 +1760,13 @@ class EnhancedInventoryManager:
                 
                 cursor.execute('''
                     INSERT INTO scan_metadata (
-                        scan_id, timestamp, devices_found, devices_new, 
-                        devices_updated, errors_count
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        scan_id, start_time, devices_discovered, status
+                    ) VALUES (?, ?, ?, ?)
                 ''', (
                     scan_id,
                     datetime.now().isoformat(),
                     results.get('devices_processed', 0),
-                    results.get('devices_new', 0),
-                    results.get('devices_updated', 0),
-                    len(results.get('errors', []))
+                    'completed'
                 ))
                 
                 conn.commit()
@@ -1811,3 +1808,35 @@ async def process_enhanced_scan(devices: Dict, scan_id: str, metadata: Dict = No
     else:
         logger.info(f"Processing legacy scanner results: {len(devices)} devices")
         return await manager.process_scan_results(devices, scan_id)
+
+    def clear_all_devices(self) -> bool:
+        """Clear all devices from the database"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM devices")
+                cursor.execute("DELETE FROM device_ports")
+                cursor.execute("DELETE FROM device_vulnerabilities")
+                cursor.execute("DELETE FROM device_changes")
+                conn.commit()
+                logger.info("Cleared all devices from database")
+                return True
+        except Exception as e:
+            logger.error(f"Failed to clear database: {e}")
+            return False
+    
+    def delete_device(self, ip: str) -> bool:
+        """Delete a device by IP"""
+        try:
+            device = self.get_device_by_ip(ip)
+            if not device:
+                return False
+                
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM devices WHERE ip = ?", (ip,))
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Failed to delete device {ip}: {e}")
+            return False
