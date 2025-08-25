@@ -288,7 +288,7 @@ class NetScopeApp {
             this.updateDiscoveryResults({
                 hostsFound: devices.length,
                 newDevices: devices.filter(d => this.isRecentDevice(d)).length,
-                openPorts: devices.reduce((sum, d) => sum + (d.open_ports || 0), 0),
+                openPorts: devices.reduce((sum, d) => sum + (d.ports ? d.ports.length : d.open_ports || 0), 0),
                 vulnerabilities: devices.reduce((sum, d) => sum + (d.vulnerabilities || 0), 0)
             });
             
@@ -1140,15 +1140,19 @@ class NetScopeApp {
                                 .replace(/_/g, ' ')
                                 .replace(/\b\w/g, l => l.toUpperCase());
                             
-                            // Format open ports
-                            const openPorts = device.open_ports || [];
+                            // Format open ports - use device.ports array, not open_ports number
+                            const openPorts = device.ports || [];
+                            if (device.ip === '10.0.0.1' || device.ip === '10.0.0.51') {
+                                console.log(`Device ${device.ip}:`, 'ports=', device.ports, 'open_ports=', device.open_ports);
+                            }
                             const portsDisplay = openPorts.length > 0 
                                 ? `${openPorts.length} ports` 
                                 : 'None';
                             
-                            // Format services
+                            // Format services - extract service names from port objects
+                            const services = openPorts.map(p => `${p.port_number}/${p.service_name}`);
                             const servicesDisplay = device.service_summary || 
-                                (openPorts.length > 0 ? openPorts.slice(0, 3).join(', ') + (openPorts.length > 3 ? '...' : '') : 'None');
+                                (services.length > 0 ? services.slice(0, 3).join(', ') + (services.length > 3 ? '...' : '') : 'None');
                             
                             // Format OS
                             const osDisplay = device.os_detected || device.os || 'Unknown';

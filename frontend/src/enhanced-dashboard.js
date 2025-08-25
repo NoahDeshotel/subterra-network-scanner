@@ -232,6 +232,10 @@ class EnhancedDashboard {
                 this.handleDeviceChange(data);
             });
             
+            this.websocket.on('devices_saved', (data) => {
+                this.handleDevicesSaved(data);
+            });
+            
         } catch (error) {
             console.error('WebSocket setup failed:', error);
         }
@@ -724,7 +728,7 @@ class EnhancedDashboard {
     
     showScanProgress() {
         /**
-         * Show enhanced scan progress indicator
+         * Show enhanced scan progress indicator with detailed statistics
          */
         const progressContainer = document.getElementById('scan-progress');
         if (progressContainer) {
@@ -738,11 +742,39 @@ class EnhancedDashboard {
                         <span class="progress-text">Initializing scan...</span>
                         <span class="progress-percentage">0%</span>
                     </div>
+                    <div class="scan-statistics">
+                        <div class="stat-row">
+                            <div class="stat-item">
+                                <i class="fas fa-network-wired"></i>
+                                <span class="stat-label">Addresses:</span>
+                                <span class="stat-value" id="addresses-scanned">0/0</span>
+                            </div>
+                            <div class="stat-item">
+                                <i class="fas fa-search"></i>
+                                <span class="stat-label">Discovered:</span>
+                                <span class="stat-value" id="devices-discovered">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <i class="fas fa-save"></i>
+                                <span class="stat-label">Saved:</span>
+                                <span class="stat-value" id="devices-saved">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <i class="fas fa-clock"></i>
+                                <span class="stat-label">Elapsed:</span>
+                                <span class="stat-value" id="scan-elapsed">0:00</span>
+                            </div>
+                        </div>
+                        <div class="current-target" id="current-target" style="margin-top: 10px;">
+                            <span class="target-label">Current:</span>
+                            <span class="target-value" id="current-ip">Starting...</span>
+                        </div>
+                    </div>
                     <div class="progress-stages">
                         <div class="stage" data-stage="network_discovery">Network Discovery</div>
                         <div class="stage" data-stage="host_discovery">Host Discovery</div>
-                        <div class="stage" data-stage="topology_mapping">Topology Mapping</div>
-                        <div class="stage" data-stage="data_processing">Data Processing</div>
+                        <div class="stage" data-stage="topology_mapping">Port Scanning</div>
+                        <div class="stage" data-stage="data_processing">Saving Data</div>
                     </div>
                     <div class="job-based-details" id="job-details" style="display: none;">
                         <div class="job-stats">
@@ -766,21 +798,27 @@ class EnhancedDashboard {
                     </div>
                 </div>
             `;
+            
+            // Start elapsed time counter
+            this.startScanTimer();
         }
     }
     
     updateScanProgress(data) {
         /**
-         * Update scan progress display with enhanced job-based information
+         * Update scan progress display with detailed information
          */
         const progressFill = document.querySelector('.progress-fill');
         const progressText = document.querySelector('.progress-text');
         const progressPercentage = document.querySelector('.progress-percentage');
         
-        // Handle new progress structure from scan_progress_tracker
+        // Extract detailed progress information
         let progressValue = 0;
         let progressMessage = 'Scanning...';
         let scannerType = 'enhanced';
+        let devicesScanned = data.devices_scanned || 0;
+        let devicesSaved = data.devices_saved || 0;
+        let totalAddresses = data.total_addresses || 0;
         
         if (data.progress && typeof data.progress === 'object') {
             // New structure from scan_progress_tracker
@@ -822,13 +860,27 @@ class EnhancedDashboard {
             progressFill.style.width = `${progressValue}%`;
         }
         
+        // Enhanced progress message with detailed stats
         if (progressText) {
-            progressText.textContent = progressMessage;
+            let detailedMessage = progressMessage;
+            
+            // Add detailed statistics if available
+            if (totalAddresses > 0) {
+                detailedMessage = `${progressMessage} | ${devicesScanned}/${totalAddresses} addresses scanned`;
+                if (devicesSaved > 0) {
+                    detailedMessage += ` | ${devicesSaved} devices saved`;
+                }
+            }
+            
+            progressText.textContent = detailedMessage;
         }
         
         if (progressPercentage) {
             progressPercentage.textContent = `${Math.round(progressValue)}%`;
         }
+        
+        // Update additional statistics display
+        this.updateScanStatistics(data);
         
         // Handle job-based scanner specific progress
         if (scannerType === 'job_based' || data.enhanced) {
@@ -945,6 +997,7 @@ class EnhancedDashboard {
         if (progressContainer) {
             progressContainer.classList.add('hidden');
         }
+        this.stopScanTimer();
     }
     
     loadInitialData() {
@@ -953,7 +1006,7 @@ class EnhancedDashboard {
          */
         Promise.all([
             this.apiCall('/api/statistics/enhanced'),
-            this.apiCall('/api/devices'),
+            this.apiCall('/api/devices?per_page=1000'),  // Request all devices (up to 1000)
             this.apiCall('/api/topology'),
             this.apiCall('/api/changes?hours=24')
         ])
@@ -1154,6 +1207,15 @@ class EnhancedDashboard {
          * Populate inventory table and update charts from /api/devices
          */
         const devices = devicesPayload?.devices || [];
+        
+        // Debug logging
+        console.log('UpdateDevicesData called with:', devices.length, 'devices');
+        const devicesWithPorts = devices.filter(d => d.ports && d.ports.length > 0);
+        console.log('Devices with ports:', devicesWithPorts.length);
+        if (devicesWithPorts.length > 0) {
+            console.log('Sample device with ports:', devicesWithPorts[0]);
+        }
+        
         // Inventory table with enhanced job-based scanner data
         const tbody = document.getElementById('inventory-tbody');
         if (tbody) {
@@ -1165,6 +1227,12 @@ class EnhancedDashboard {
                 const deviceTypeIcon = this.getDeviceTypeIcon(d.device_type);
                 const snmpIndicator = d.snmp_capable ? '<i class="fas fa-network-wired text-success" title="SNMP Capable"></i>' : '';
                 const topologyIndicator = (d.has_cdp || d.has_lldp) ? '<i class="fas fa-project-diagram text-info" title="Topology Discovery"></i>' : '';
+                
+                // Add ports info to the row - now directly from device data
+                const portInfo = this.formatPortsList(d.ports || []);
+                if (d.ip === '10.0.0.1' || d.ip === '10.0.0.51') {
+                    console.log(`Device ${d.ip} ports:`, d.ports, 'Formatted:', portInfo);
+                }
                 
                 tr.innerHTML = `
                     <td>
@@ -1179,7 +1247,12 @@ class EnhancedDashboard {
                     </td>
                     <td>${d.os || d.os_name || '<em>Unknown</em>'}</td>
                     <td>
-                        <span class="port-count">${d.open_ports || 0}</span>
+                        <div class="ports-info" id="ports-${d.ip.replace(/\./g, '-')}">
+                            <span class="port-count">${d.ports ? d.ports.length : 0} ports</span>
+                            <div class="port-details" style="font-size: 0.85em; margin-top: 4px;">
+                                ${portInfo}
+                            </div>
+                        </div>
                         ${d.scanner_type === 'job_based' ? '<small class="text-success">Enhanced</small>' : ''}
                     </td>
                     <td>
@@ -1194,7 +1267,7 @@ class EnhancedDashboard {
                         ${d.last_discover ? `<small class="text-muted"><br/>Discovered: ${this.formatTimestamp(d.last_discover)}</small>` : ''}
                     </td>
                     <td>
-                        <button class="btn btn-xs btn-primary" data-ip="${d.ip}" onclick="showDeviceDetails('${d.ip}')">
+                        <button class="btn btn-xs btn-primary" data-ip="${d.ip}" onclick="enhancedDashboard.showDeviceDetails('${d.ip}')">
                             Details
                         </button>
                     </td>
@@ -1337,6 +1410,214 @@ class EnhancedDashboard {
         return icons[deviceType] || icons['unknown'];
     }
     
+    async fetchPortData() {
+        /**
+         * Fetch port data for all devices
+         */
+        try {
+            const response = await this.apiCall('/api/ports');
+            return response.devices_with_ports || [];
+        } catch (error) {
+            console.error('Failed to fetch port data:', error);
+            return [];
+        }
+    }
+    
+    updateDevicesWithPorts(devices, portsData) {
+        /**
+         * Update device rows with port information
+         */
+        const portsMap = {};
+        portsData.forEach(devicePorts => {
+            portsMap[devicePorts.ip] = devicePorts.ports;
+        });
+        
+        devices.forEach(device => {
+            const ports = portsMap[device.ip] || [];
+            const portElement = document.getElementById(`ports-${device.ip.replace(/\./g, '-')}`);
+            if (portElement) {
+                const portDetails = this.formatPortsList(ports);
+                portElement.innerHTML = `
+                    <span class="port-count">${ports.length} ports</span>
+                    <div class="port-details" style="font-size: 0.85em; margin-top: 4px;">
+                        ${portDetails}
+                    </div>
+                `;
+            }
+        });
+    }
+    
+    formatPortsList(ports) {
+        /**
+         * Format ports list for display
+         */
+        if (!ports || ports.length === 0) {
+            return '<em class="text-muted">No open ports detected</em>';
+        }
+        
+        // Group ports by protocol
+        const tcpPorts = ports.filter(p => p.protocol === 'tcp').map(p => {
+            const serviceName = p.service_name ? ` (${p.service_name})` : '';
+            return `${p.port_number}${serviceName}`;
+        });
+        
+        const udpPorts = ports.filter(p => p.protocol === 'udp').map(p => {
+            const serviceName = p.service_name ? ` (${p.service_name})` : '';
+            return `${p.port_number}${serviceName}`;
+        });
+        
+        let html = '';
+        if (tcpPorts.length > 0) {
+            html += `<div><strong>TCP:</strong> ${tcpPorts.slice(0, 5).join(', ')}${tcpPorts.length > 5 ? `, +${tcpPorts.length - 5} more` : ''}</div>`;
+        }
+        if (udpPorts.length > 0) {
+            html += `<div><strong>UDP:</strong> ${udpPorts.slice(0, 5).join(', ')}${udpPorts.length > 5 ? `, +${udpPorts.length - 5} more` : ''}</div>`;
+        }
+        
+        return html;
+    }
+    
+    async showDeviceDetails(ip) {
+        /**
+         * Show detailed device information including all ports
+         */
+        try {
+            // Fetch device details and ports
+            const [device, portsResponse] = await Promise.all([
+                this.apiCall(`/api/devices/${ip}`),
+                this.apiCall(`/api/devices/${ip}/ports`)
+            ]);
+            
+            const ports = portsResponse.ports || [];
+            
+            // Create detail modal
+            const modal = document.createElement('div');
+            modal.className = 'modal device-details-modal';
+            modal.innerHTML = `
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h2><i class="fas fa-server"></i> Device Details: ${ip}</h2>
+                        <button class="modal-close">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="device-info-grid">
+                            <div class="info-section">
+                                <h3>Basic Information</h3>
+                                <table class="info-table">
+                                    <tr><td>IP Address:</td><td>${device.ip || 'N/A'}</td></tr>
+                                    <tr><td>Hostname:</td><td>${device.hostname || 'Unknown'}</td></tr>
+                                    <tr><td>MAC Address:</td><td>${device.mac_address || 'Unknown'}</td></tr>
+                                    <tr><td>Device Type:</td><td>${device.device_type || 'Unknown'}</td></tr>
+                                    <tr><td>OS:</td><td>${device.os || device.os_name || 'Unknown'}</td></tr>
+                                    <tr><td>Vendor:</td><td>${device.vendor || 'Unknown'}</td></tr>
+                                    <tr><td>Last Seen:</td><td>${this.formatTimestamp(device.last_seen)}</td></tr>
+                                </table>
+                            </div>
+                            
+                            <div class="info-section">
+                                <h3>Open Ports (${ports.length})</h3>
+                                <div class="ports-list" style="max-height: 400px; overflow-y: auto;">
+                                    ${this.formatDetailedPortsList(ports)}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary modal-close">Close</button>
+                        <button class="btn btn-primary" onclick="enhancedDashboard.startPortScan('${ip}')">
+                            <i class="fas fa-sync"></i> Rescan Ports
+                        </button>
+                    </div>
+                </div>
+            `;
+            
+            document.body.appendChild(modal);
+            modal.style.display = 'block';
+            
+            // Add close handlers
+            modal.querySelectorAll('.modal-close').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    document.body.removeChild(modal);
+                });
+            });
+            
+        } catch (error) {
+            console.error('Failed to load device details:', error);
+            this.showNotification('Error', 'Failed to load device details', 'error');
+        }
+    }
+    
+    formatDetailedPortsList(ports) {
+        /**
+         * Format detailed ports list for modal
+         */
+        if (!ports || ports.length === 0) {
+            return '<p class="text-muted">No open ports detected</p>';
+        }
+        
+        const html = `
+            <table class="ports-table" style="width: 100%;">
+                <thead>
+                    <tr>
+                        <th>Port</th>
+                        <th>Protocol</th>
+                        <th>State</th>
+                        <th>Service</th>
+                        <th>Risk</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${ports.map(port => `
+                        <tr>
+                            <td>${port.port_number}</td>
+                            <td>${port.protocol?.toUpperCase() || 'TCP'}</td>
+                            <td><span class="badge badge-${port.state === 'open' ? 'success' : 'warning'}">${port.state || 'open'}</span></td>
+                            <td>${port.service_name || '-'}</td>
+                            <td><span class="badge badge-${this.getRiskBadgeClass(port.risk_level)}">${port.risk_level || 'low'}</span></td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+        
+        return html;
+    }
+    
+    getRiskBadgeClass(riskLevel) {
+        const classes = {
+            'critical': 'danger',
+            'high': 'warning',
+            'medium': 'info',
+            'low': 'success'
+        };
+        return classes[riskLevel] || 'secondary';
+    }
+    
+    async startPortScan(ip) {
+        /**
+         * Start a port scan for a specific device
+         */
+        try {
+            const response = await this.apiCall('/api/scan/start', {
+                method: 'POST',
+                body: JSON.stringify({
+                    subnet: `${ip}/32`,
+                    deep_scan: true,
+                    scanner_type: 'enhanced'
+                })
+            });
+            
+            if (response.success) {
+                this.showNotification('Port Scan Started', `Scanning ports on ${ip}`, 'info');
+            } else {
+                this.showNotification('Scan Failed', response.error || 'Failed to start port scan', 'error');
+            }
+        } catch (error) {
+            console.error('Failed to start port scan:', error);
+            this.showNotification('Error', 'Failed to start port scan', 'error');
+        }
+    }
+    
     formatTimestamp(timestamp) {
         /**
          * Format timestamp for display
@@ -1352,11 +1633,76 @@ class EnhancedDashboard {
     }
 
     // WebSocket event handlers
+    updateScanStatistics(data) {
+        /**
+         * Update detailed scan statistics
+         */
+        // Update addresses scanned
+        const addressesElement = document.getElementById('addresses-scanned');
+        if (addressesElement && data.total_addresses) {
+            const scanned = data.devices_scanned || 0;
+            const total = data.total_addresses;
+            addressesElement.textContent = `${scanned}/${total}`;
+        }
+        
+        // Update devices discovered
+        const discoveredElement = document.getElementById('devices-discovered');
+        if (discoveredElement) {
+            discoveredElement.textContent = data.devices_found || data.devices_discovered || '0';
+        }
+        
+        // Update devices saved
+        const savedElement = document.getElementById('devices-saved');
+        if (savedElement) {
+            savedElement.textContent = data.devices_saved || '0';
+        }
+        
+        // Update current IP being scanned
+        const currentIpElement = document.getElementById('current-ip');
+        if (currentIpElement && data.message) {
+            // Extract IP from message if available
+            const ipMatch = data.message.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/);;
+            if (ipMatch) {
+                currentIpElement.textContent = ipMatch[1];
+            }
+        }
+    }
+    
+    startScanTimer() {
+        /**
+         * Start timer to show elapsed scan time
+         */
+        this.scanStartTime = Date.now();
+        
+        // Update timer every second
+        this.scanTimerInterval = setInterval(() => {
+            const elapsed = Date.now() - this.scanStartTime;
+            const minutes = Math.floor(elapsed / 60000);
+            const seconds = Math.floor((elapsed % 60000) / 1000);
+            
+            const elapsedElement = document.getElementById('scan-elapsed');
+            if (elapsedElement) {
+                elapsedElement.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+            }
+        }, 1000);
+    }
+    
+    stopScanTimer() {
+        /**
+         * Stop the scan timer
+         */
+        if (this.scanTimerInterval) {
+            clearInterval(this.scanTimerInterval);
+            this.scanTimerInterval = null;
+        }
+    }
+    
     handleScanStarted(data) {
         console.log('Scan started:', data.scan_id);
         const scannerType = data.config?.scanner_type || 'enhanced';
         const scannerName = this.getScannerDisplayName(scannerType);
-        this.showNotification('Scan Started', `${scannerName} scan in progress`, 'info');
+        const totalAddresses = data.config?.total_addresses || 'unknown';
+        this.showNotification('Scan Started', `${scannerName} scan in progress for ${totalAddresses} addresses`, 'info');
     }
     
     handleScanProgress(data) {
@@ -1424,6 +1770,25 @@ class EnhancedDashboard {
         // Update real-time if enabled
         if (this.realTimeUpdates) {
             this.showNotification('Device Change', `${data.change_type} on ${data.device_ip}`, 'warning');
+        }
+    }
+    
+    handleDevicesSaved(data) {
+        console.log('Devices saved:', data);
+        
+        // Update saved devices counter
+        const savedElement = document.getElementById('devices-saved');
+        if (savedElement) {
+            savedElement.textContent = data.devices_saved || '0';
+        }
+        
+        // Refresh device list if not too frequent
+        if (!this.lastDeviceRefresh || Date.now() - this.lastDeviceRefresh > 5000) {
+            this.lastDeviceRefresh = Date.now();
+            // Reload devices to show newly saved ones
+            this.apiCall('/api/devices?per_page=1000')
+                .then(devices => this.updateDevicesData(devices))
+                .catch(error => console.error('Failed to refresh devices:', error));
         }
     }
     

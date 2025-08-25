@@ -9,6 +9,7 @@ from flask_cors import CORS
 from flask_socketio import SocketIO
 import logging
 import os
+import sqlite3
 from datetime import datetime
 
 # Import scanner API
@@ -133,7 +134,7 @@ def get_devices():
     """Get all devices from inventory"""
     try:
         page = request.args.get('page', 1, type=int)
-        per_page = request.args.get('per_page', 50, type=int)
+        per_page = request.args.get('per_page', 1000, type=int)  # Increased default limit
         search = request.args.get('search', '')
         
         # Use correct method name
@@ -181,6 +182,73 @@ def update_device(ip):
     except Exception as e:
         logger.error(f"Failed to update device: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/devices/<ip>/ports', methods=['GET'])
+def get_device_ports(ip):
+    """Get ports for a specific device"""
+    try:
+        # Get device by IP to find device_id
+        device = inventory.get_device_by_ip(ip)
+        if not device:
+            return jsonify({'error': 'Device not found'}), 404
+        
+        # Query ports from database
+        conn = sqlite3.connect(inventory.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT dp.*, d.ip, d.hostname
+            FROM device_ports dp
+            JOIN devices d ON dp.device_id = d.id
+            WHERE d.ip = ?
+            ORDER BY dp.port_number
+        """, (ip,))
+        
+        ports = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        
+        return jsonify({'device_ip': ip, 'ports': ports})
+        
+    except Exception as e:
+        logger.error(f"Failed to get device ports: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ports', methods=['GET'])
+def get_all_ports():
+    """Get all ports from all devices"""
+    try:
+        conn = sqlite3.connect(inventory.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT dp.*, d.ip, d.hostname
+            FROM device_ports dp
+            JOIN devices d ON dp.device_id = d.id
+            ORDER BY d.ip, dp.port_number
+        """)
+        
+        ports = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        
+        # Group ports by device
+        devices_ports = {}
+        for port in ports:
+            device_ip = port['ip']
+            if device_ip not in devices_ports:
+                devices_ports[device_ip] = {
+                    'ip': device_ip,
+                    'hostname': port['hostname'],
+                    'ports': []
+                }
+            devices_ports[device_ip]['ports'].append(port)
+        
+        return jsonify({'devices_with_ports': list(devices_ports.values()), 'total_ports': len(ports)})
+        
+    except Exception as e:
+        logger.error(f"Failed to get all ports: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/devices/<ip>', methods=['DELETE'])
 def delete_device(ip):
