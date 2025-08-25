@@ -1974,3 +1974,196 @@ body {
 .modal-actions .btn {
     min-width: 100px;
 }
+
+/* Scan Statistics Styles */
+.scan-statistics {
+    padding: var(--spacing-lg);
+    background: var(--glass-light);
+    border-radius: var(--radius-sm);
+    margin: var(--spacing-md) 0;
+}
+
+.stat-row {
+    display: flex;
+    justify-content: space-around;
+    gap: var(--spacing-md);
+    flex-wrap: wrap;
+}
+
+.scan-statistics .stat-item {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm);
+    background: var(--glass-medium);
+    border-radius: var(--radius-xs);
+    min-width: 120px;
+}
+
+.scan-statistics .stat-item i {
+    color: var(--primary);
+    font-size: 1.2rem;
+}
+
+.scan-statistics .stat-label {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.scan-statistics .stat-value {
+    color: var(--text-primary);
+    font-weight: 600;
+    margin-left: auto;
+}
+
+.current-target {
+    padding: var(--spacing-sm);
+    background: var(--glass-medium);
+    border-radius: var(--radius-xs);
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+}
+
+.target-label {
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+.target-value {
+    color: var(--primary);
+    font-family: 'Courier New', monospace;
+    font-weight: 600;
+}
+
+/* Port Information Styles */
+.ports-info {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.port-count {
+    font-weight: 600;
+    color: var(--primary);
+}
+
+.port-details {
+    font-size: 0.85em;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+.port-details strong {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.ports-list {
+    max-height: 400px;
+    overflow-y: auto;
+    padding: var(--spacing-md);
+    background: var(--glass-light);
+    border-radius: var(--radius-sm);
+}
+
+.ports-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.ports-table thead {
+    background: var(--glass-medium);
+    position: sticky;
+    top: 0;
+}
+
+.ports-table th {
+    padding: var(--spacing-sm) var(--spacing-md);
+    text-align: left;
+    font-weight: 600;
+    color: var(--text-primary);
+    border-bottom: 2px solid var(--glass-border);
+}
+
+.ports-table td {
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-bottom: 1px solid var(--glass-border);
+    color: var(--text-secondary);
+}
+
+.ports-table tbody tr:hover {
+    background: var(--glass-light);
+}
+
+.badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: var(--radius-xs);
+    font-size: 0.75em;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.badge-success {
+    background: rgba(76, 175, 80, 0.2);
+    color: #4CAF50;
+}
+
+.badge-warning {
+    background: rgba(255, 152, 0, 0.2);
+    color: #FF9800;
+}
+
+.badge-danger {
+    background: rgba(244, 67, 54, 0.2);
+    color: #F44336;
+}
+
+.badge-info {
+    background: rgba(33, 150, 243, 0.2);
+    color: #2196F3;
+}
+
+.badge-secondary {
+    background: var(--glass-light);
+    color: var(--text-secondary);
+}
+
+.device-details-modal .modal-content {
+    max-width: 900px;
+    width: 90vw;
+}
+
+.device-info-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--spacing-xl);
+}
+
+.info-section {
+    background: var(--glass-light);
+    padding: var(--spacing-lg);
+    border-radius: var(--radius-md);
+}
+
+.info-section h3 {
+    margin: 0 0 var(--spacing-md) 0;
+    color: var(--text-primary);
+    font-size: 1.1rem;
+}
+
+.info-table {
+    width: 100%;
+}
+
+.info-table td {
+    padding: var(--spacing-xs) var(--spacing-sm);
+    color: var(--text-secondary);
+}
+
+.info-table td:first-child {
+    font-weight: 600;
+    color: var(--text-primary);
+    width: 40%;
+}

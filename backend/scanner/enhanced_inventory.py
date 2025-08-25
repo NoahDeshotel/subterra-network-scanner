@@ -1554,14 +1554,37 @@ class EnhancedInventoryManager:
             return {'error': str(e)}
 
     def get_device_by_ip(self, ip: str) -> Optional[Dict]:
-        """Get device by IP address"""
+        """Get device by IP address with port information"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 cursor.execute('SELECT * FROM devices WHERE ip = ?', (ip,))
                 row = cursor.fetchone()
-                return dict(row) if row else None
+                
+                if row:
+                    device = dict(row)
+                    
+                    # Get port data for this device
+                    cursor.execute('''
+                        SELECT port_number, protocol, state, service_name, risk_level
+                        FROM device_ports
+                        WHERE device_id = ? AND state = 'open'
+                        ORDER BY port_number
+                    ''', (device['id'],))
+                    
+                    device['ports'] = []
+                    for port_row in cursor.fetchall():
+                        device['ports'].append({
+                            'port_number': port_row[0],
+                            'protocol': port_row[1],
+                            'state': port_row[2],
+                            'service_name': port_row[3],
+                            'risk_level': port_row[4]
+                        })
+                    
+                    return device
+                return None
         except Exception as e:
             logger.error(f"Failed to get device by IP {ip}: {e}")
             return None
@@ -1643,6 +1666,25 @@ class EnhancedInventoryManager:
                             device['discovery_methods'] = json.loads(device['discovery_methods'])
                         except:
                             device['discovery_methods'] = ['nmap']
+                    
+                    # Get actual port data for this device
+                    cursor.execute('''
+                        SELECT port_number, protocol, state, service_name, risk_level
+                        FROM device_ports
+                        WHERE device_id = ? AND state = 'open'
+                        ORDER BY port_number
+                    ''', (device['id'],))
+                    
+                    device['ports'] = []
+                    for port_row in cursor.fetchall():
+                        device['ports'].append({
+                            'port_number': port_row[0],
+                            'protocol': port_row[1],
+                            'state': port_row[2],
+                            'service_name': port_row[3],
+                            'risk_level': port_row[4]
+                        })
+                    
                     devices.append(device)
                 
                 return {
